@@ -110,6 +110,16 @@ namespace BreakBoxCore
         public double Mfe;
         public bool StopCancelled;              // hand-pulled; nothing resurrects it
         public int BarsInTrade;
+
+        // Realised result, accumulated PER EXIT FILL in price-points x contracts.
+        // The trade-level number used to be recomputed at the end from a single
+        // exit price, which valued the WHOLE position at whichever tier or stop
+        // happened to be last. That errs in BOTH directions: a trade that ran to
+        // its best tier was overstated, and one whose runner came back to
+        // breakeven after banking TP1 was recorded as a scratch. The equity
+        // curve inherited both.
+        public double RealizedPts;
+        public int QtyClosed;
     }
 
     public struct BbExitDecision
@@ -254,6 +264,36 @@ namespace BreakBoxCore
             return tiers;
         }
 
+        // Every exit execution lands here exactly once, whatever closed it —
+        // tier, stop or flatten. Points, not currency: the pure layer has no
+        // business knowing an instrument's point value.
+        public static void AddExitFill(BbBracket br, double px, int qty)
+        {
+            if (br == null || qty < 1 || br.Dir == 0)
+                return;
+            br.RealizedPts += (px - br.EntryPx) * br.Dir * qty;
+            br.QtyClosed += qty;
+        }
+
+        // The single exit price that would have produced `pts` over `qty`
+        // contracts — what the journal should record as "the" exit of a trade
+        // that left in pieces.
+        public static double ExitPxFromPts(double entryPx, int dir, double pts, int qty)
+        {
+            if (qty < 1 || dir == 0)
+                return entryPx;
+            return entryPx + dir * (pts / qty);
+        }
+
+        // Result in R, per contract. Kept beside the price version so the two
+        // can never disagree about which way `pts` points.
+        public static double RFromPts(double pts, int qty, double r)
+        {
+            if (qty < 1 || r <= 0.0)
+                return 0.0;
+            return (pts / qty) / r;
+        }
+
         // Prices the whole bracket at the fill and seeds the state. Called ONCE
         // per trade, from the execution event — not from a bar close.
         public static BbExitDecision OnEntryFill(BbExitConfig cfg, BbBracket br,
@@ -270,6 +310,8 @@ namespace BreakBoxCore
             br.QtyOpen = qty;
             br.BeApplied = false;
             br.TrailArmed = false;
+            br.RealizedPts = 0.0;
+            br.QtyClosed = 0;
             br.StopCancelled = false;
             br.BarsInTrade = 0;
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)

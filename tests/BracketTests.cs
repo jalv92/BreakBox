@@ -23,6 +23,58 @@ public static class BracketTests
         Trail();
         DegenerateStopIsImpossible();
         WarmupGatesOnlyWhatIsUsed();
+        RealizedScaleOut();
+    }
+
+    // A trade that leaves in pieces has no single exit price. The journal used to
+    // pretend it did, valuing the whole position at whichever fill was last, and
+    // the equity curve the panel exists to read was built out of those numbers.
+    private static void RealizedScaleOut()
+    {
+        T.Section("Realised P&L accumulates per exit fill");
+
+        // Long 3 lots, entry 100, R = 10. Scales out at 1R, 2R, 3R.
+        var br = new BbBracket();
+        br.Dir = 1; br.EntryPx = 100.0; br.R = 10.0; br.QtyTotal = 3; br.QtyOpen = 3;
+        BbExits.AddExitFill(br, 110.0, 1);
+        BbExits.AddExitFill(br, 120.0, 1);
+        BbExits.AddExitFill(br, 130.0, 1);
+        T.CheckClose(br.RealizedPts, 60.0, "1R + 2R + 3R banks 60 points, not 3 x the best tier");
+        T.CheckInt(br.QtyClosed, 3, "every contract is accounted for");
+        T.CheckClose(BbExits.ExitPxFromPts(100.0, 1, br.RealizedPts, 3), 120.0, "journalled exit is the average, 120");
+        T.CheckClose(BbExits.RFromPts(br.RealizedPts, 3, 10.0), 2.0, "2R average, not the 3R of the last fill");
+        // What the old maths would have written: (130 - 100) * 3 = 90 points, 3R.
+        T.Check(br.RealizedPts < 90.0, "the old single-price maths overstated this trade");
+
+        // The other direction of the same error: TP1 banked, runner scratched.
+        var sc = new BbBracket();
+        sc.Dir = 1; sc.EntryPx = 100.0; sc.R = 10.0; sc.QtyTotal = 3;
+        BbExits.AddExitFill(sc, 110.0, 1);
+        BbExits.AddExitFill(sc, 100.0, 2);
+        T.CheckClose(sc.RealizedPts, 10.0, "a scratched runner still leaves TP1 banked");
+        T.CheckClose(BbExits.RFromPts(sc.RealizedPts, 3, 10.0), 1.0 / 3.0, "+0.33R, where the old maths recorded zero");
+
+        // Shorts carry the sign correctly, winner netted against loser.
+        var sh = new BbBracket();
+        sh.Dir = -1; sh.EntryPx = 100.0; sh.R = 10.0; sh.QtyTotal = 2;
+        BbExits.AddExitFill(sh, 90.0, 1);
+        BbExits.AddExitFill(sh, 105.0, 1);
+        T.CheckClose(sh.RealizedPts, 5.0, "a short nets +10 against -5");
+        T.CheckClose(BbExits.ExitPxFromPts(100.0, -1, sh.RealizedPts, 2), 97.5, "average exit of a short");
+
+        BbExits.AddExitFill(sh, 90.0, 0);
+        BbExits.AddExitFill(null, 90.0, 1);
+        var flat = new BbBracket();
+        BbExits.AddExitFill(flat, 90.0, 1);
+        T.CheckClose(sh.RealizedPts, 5.0, "a zero-quantity fill changes nothing");
+        T.CheckInt(flat.QtyClosed, 0, "a directionless bracket books nothing");
+        T.CheckClose(BbExits.RFromPts(60.0, 3, 0.0), 0.0, "no R measured means no R multiple");
+        T.CheckClose(BbExits.ExitPxFromPts(100.0, 1, 60.0, 0), 100.0, "no contracts closed reports the entry");
+
+        // A fresh entry must not inherit the previous trade's realised total.
+        BbExits.OnEntryFill(Cfg(), br, 1, 50.0, 2, 1.0, false, NoStructure());
+        T.CheckClose(br.RealizedPts, 0.0, "a new entry resets realised points");
+        T.CheckInt(br.QtyClosed, 0, "a new entry resets the closed count");
     }
 
     private static BbExitConfig Cfg()

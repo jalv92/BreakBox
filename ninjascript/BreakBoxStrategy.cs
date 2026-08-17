@@ -1179,10 +1179,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        private static bool IsTierSig(string sig)
+        {
+            for (int i = 0; i < TierSig.Length; i++)
+                if (sig == TierSig[i])
+                    return true;
+            return false;
+        }
+
         private void WentFlat(double exitPx)
         {
-            double pnl = (exitPx - _bracket.EntryPx) * _bracket.Dir
-                         * _bracket.QtyTotal * Instrument.MasterInstrument.PointValue;
+            // Realised points, per fill. Anything we never saw an execution for
+            // — a hand flatten in Chart Trader, NT8 closing us out itself — is a
+            // RESIDUAL valued at the price that ended the trade, not the whole
+            // position valued there.
+            double pts = _bracket.RealizedPts;
+            int residual = _bracket.QtyTotal - _bracket.QtyClosed;
+            if (residual > 0)
+                pts += (exitPx - _bracket.EntryPx) * _bracket.Dir * residual;
+            double pnl = pts * Instrument.MasterInstrument.PointValue;
 
             // Journalled BEFORE the bracket is torn down: `_bracket.Dir` is
             // zeroed twelve lines below, and reading it after is how a history
@@ -1191,9 +1206,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             rec.Ts = Time[0];
             rec.Dir = _bracket.Dir;
             rec.Entry = _bracket.EntryPx;
-            rec.Exit = exitPx;
+            rec.Exit = BbExits.ExitPxFromPts(_bracket.EntryPx, _bracket.Dir, pts, _bracket.QtyTotal);
             rec.Qty = _bracket.QtyTotal;
-            rec.R = _bracket.R > 0.0 ? (exitPx - _bracket.EntryPx) * _bracket.Dir / _bracket.R : 0.0;
+            rec.R = BbExits.RFromPts(pts, _bracket.QtyTotal, _bracket.R);
             rec.Pnl = pnl;
             rec.Engine = _owningEngine.ToString();
             rec.ExitReason = _exitReason.Length > 0 ? _exitReason : "unknown";
@@ -1230,6 +1245,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (execution.Order == null)
                 return;
             string sig = execution.Order.Name;
+
+            // Realised P&L is accumulated here, ONCE per exit execution and
+            // before any branch below decides what else to do about it — the
+            // tier branch used to fall through to the close-out, so counting it
+            // inside both would have double-booked the last tier.
+            if (_inTrade && (sig == SigStop || sig == SigFlatten || IsTierSig(sig)))
+                BbExits.AddExitFill(_bracket, price, quantity);
 
             // Entry fill. Gated on the signal NAME, not on a bool: by the time
             // this arrives, another submit may already have flipped the flag.
