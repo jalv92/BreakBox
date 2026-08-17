@@ -106,7 +106,12 @@ namespace BreakBoxCore
             "direction",      // 8
             "close-in-range", // 9
             "bar range",      // 10
-            "leg"             // 11
+            "leg",            // 11
+            "direction off"   // 12 — AllowLong/AllowShort, the panel's Buy/Sell
+                              // toggles. Appended, not inserted: this array is
+                              // rendered by index (see the comment above), so a
+                              // new rung goes on the end or every existing row
+                              // label shifts under the panel's feet.
         };
 
         public BbCloud(BbCloudConfig cfg, BbCloudState st)
@@ -262,6 +267,23 @@ namespace BreakBoxCore
             if (!canTrade)
             {
                 _st.Gate.Set("auto-trade", "off, locked out or outside the window", 4);
+                return a;
+            }
+
+            // The panel's Buy/Sell toggles (BreakBoxPanel.cs's _uiLongOn /
+            // _uiShortOn, fed to both engines via BuildConfigs). This is
+            // the SAME final-veto placement as canTrade just above, for the
+            // identical reason: gating the mint at step 3 on AllowLong/
+            // AllowShort would mean a token for the disabled side is never
+            // created, so reclaim/direction/close-in-range/bar-range/leg
+            // never run for it — the exact blindness this file already paid
+            // to fix once for canTrade (see the comment above). Checking
+            // here instead keeps the whole ladder honest and only refuses
+            // the one thing this dial is actually for: the order itself.
+            bool dirAllowed = dir > 0 ? _cfg.AllowLong : _cfg.AllowShort;
+            if (!dirAllowed)
+            {
+                _st.Gate.Set("direction off", dir > 0 ? "long disabled" : "short disabled", 12);
                 return a;
             }
 

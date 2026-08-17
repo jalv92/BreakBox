@@ -20,6 +20,7 @@ public static class CloudTests
         TriggerAndTokenOwnership();
         CanTradeBoundaryAndCooldown();
         AutoTradeIsAFinalVeto();
+        DirectionGatesHonourAllowFlags();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -638,5 +639,58 @@ public static class CloudTests
         }
         T.Check(st.Armed, "no token consumed while orders are off");
         T.CheckInt(st.TriggerArmedBars, 3, "no arm/fire side-effect ran under the veto");
+    }
+
+    // The panel's Buy/Sell toggles (BreakBoxPanel.cs _uiLongOn/_uiShortOn ->
+    // BbCloudConfig.AllowLong/AllowShort). Before this fix the cloud engine
+    // never read either field — Sell off stopped the BOX engine's shorts
+    // (BreakBoxCore.cs ANDs them into the break condition) while the cloud,
+    // the PRIMARY engine, kept shorting anyway, with nothing on the panel
+    // showing it. These fixtures are GoldCandleGatesLong/Short's first case
+    // — a bar that would otherwise fire clean — replayed with the opposite
+    // side disabled.
+    private static void DirectionGatesHonourAllowFlags()
+    {
+        T.Section("Cloud — AllowLong/AllowShort gate the final veto (panel Buy/Sell toggles)");
+
+        const double eFLong = 101.0, eSLong = 100.5, eTLong = 99.0;
+        const double eFShort = 99.0, eSShort = 99.5, eTShort = 101.0;
+        const double atr = 4.0;
+
+        // Sell off: a qualifying short does not fire, and the ladder names
+        // the reason instead of leaving the operator to guess.
+        var cfg = GateCfg();
+        cfg.AllowLong = true;
+        cfg.AllowShort = false;
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, -1, 100.0, eTShort);
+        var a = c.OnBar(B(98.8, 99.0, 97.0, 97.1), 36000, eFShort, eSShort, eTShort, atr, true, true, false);
+        T.Check(!a.Fire, "AllowShort = false blocks a qualifying short setup");
+        T.Check(st.Gate.Block == "direction off", "the ladder names the direction gate (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 12, "direction off sits at the newest rung, 12");
+        T.Check(st.Armed, "the token survives — a disabled direction suppresses, it does not kill (§4.1 pattern)");
+
+        // Same config, opposite direction: Buy is still on. A gate that
+        // blocked BOTH sides by accident would pass the assert above and
+        // hide behind it — this is what catches that.
+        st = new BbCloudState();
+        c = LiveToken(cfg, st, +1, 100.0, eTLong);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eFLong, eSLong, eTLong, atr, true, true, false);
+        T.Check(a.Fire, "AllowShort = false leaves long untouched");
+
+        // Mirror: Buy off blocks a qualifying long, Sell still fires.
+        cfg = GateCfg();
+        cfg.AllowLong = false;
+        cfg.AllowShort = true;
+        st = new BbCloudState();
+        c = LiveToken(cfg, st, +1, 100.0, eTLong);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eFLong, eSLong, eTLong, atr, true, true, false);
+        T.Check(!a.Fire, "AllowLong = false blocks a qualifying long setup");
+        T.Check(st.Gate.Block == "direction off", "the ladder names the direction gate (" + st.Gate.Block + ")");
+
+        st = new BbCloudState();
+        c = LiveToken(cfg, st, -1, 100.0, eTShort);
+        a = c.OnBar(B(98.8, 99.0, 97.0, 97.1), 36000, eFShort, eSShort, eTShort, atr, true, true, false);
+        T.Check(a.Fire, "AllowLong = false leaves short untouched");
     }
 }
