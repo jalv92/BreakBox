@@ -237,5 +237,29 @@ namespace BreakBoxCore
             int n = horizonSecs / barSec;
             return n < min ? min : n;
         }
+
+        // Median seconds per bar over `count` consecutive inter-bar gaps.
+        // Returns 0 for "cannot answer" — the caller falls back to
+        // FallbackSeconds and prints that it did, because an approximate bar
+        // size that announces itself is fine and one that does not is a lie the
+        // whole parameter surface is built on.
+        public static int EstimateBarSeconds(double[] gapSecs, int count)
+        {
+            if (gapSecs == null || count < MinEstimateSamples || count > gapSecs.Length)
+                return 0;
+
+            // Copy before sorting: the caller's buffer is its own history and
+            // must survive being measured.
+            double[] s = new double[count];
+            Array.Copy(gapSecs, s, count);
+            Array.Sort(s);
+
+            double m = (count & 1) == 1
+                ? s[count / 2]
+                : 0.5 * (s[count / 2 - 1] + s[count / 2]);
+
+            int secs = (int)Math.Floor(m + 0.5);
+            return secs < 1 ? 1 : secs;
+        }
     }
 }

@@ -14,6 +14,7 @@ public static class ShellTests
     public static void Run()
     {
         SecondsToBars();
+        BarSecondsEstimate();
     }
 
     // §8: every horizon on the parameter surface is SECONDS, and this is the
@@ -45,5 +46,38 @@ public static class ShellTests
         T.CheckInt(BbScale.Bars(30, 300, 1), 1, "a sub-bar horizon floors at the minimum");
         T.CheckInt(BbScale.Bars(30, 300, 2), 2, "and honours a minimum of 2");
         T.CheckInt(BbScale.Bars(600, 0, 2), 2, "a nonsense bar size floors rather than dividing by zero");
+    }
+
+    // §8's non-time-series branch. Javier runs 150-tick charts elsewhere in this
+    // workspace (PatternZone), so a hard throw would turn "escala sola" into "no
+    // carga". The estimate makes a tick chart usable and VISIBLY approximate
+    // instead of silently wrong.
+    private static void BarSecondsEstimate()
+    {
+        T.Section("Scale — non-time bar size estimate (spec 8)");
+
+        // 150-tick NQ during RTH: a bar every ~12 seconds.
+        double[] g = new double[400];
+        for (int i = 0; i < g.Length; i++) g[i] = 12.0;
+        T.CheckInt(BbScale.EstimateBarSeconds(g, g.Length), 12, "a clean 150-tick sample estimates 12s");
+
+        // Median, not mean, and this is why. Overnight the same chart prints one
+        // bar an hour; twenty of those gaps move a MEAN of 400 samples by ~180s,
+        // which would have a 12-second chart claim it is on 3-minute bars and
+        // stretch every horizon 15x. The median does not move at all.
+        for (int i = 0; i < 20; i++) g[i] = 3600.0;
+        T.CheckInt(BbScale.EstimateBarSeconds(g, g.Length), 12, "session gaps do not move the median");
+
+        // Too little history to answer. 0 means "no estimate" so the caller can
+        // fall back AND warn; guessing off 50 bars is how a chart ends up
+        // silently running a different model.
+        T.CheckInt(BbScale.EstimateBarSeconds(g, 199), 0, "under 200 samples yields no estimate");
+        T.CheckInt(BbScale.EstimateBarSeconds(null, 400), 0, "no history yields no estimate");
+
+        // Sub-second bars are a real configuration (a fast range chart). They
+        // must not collapse to 0 and take every horizon's divisor with them.
+        double[] fast = new double[250];
+        for (int i = 0; i < fast.Length; i++) fast[i] = 0.2;
+        T.CheckInt(BbScale.EstimateBarSeconds(fast, fast.Length), 1, "a sub-second series floors at 1s");
     }
 }
