@@ -607,7 +607,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (TimeToFlatten(secs))
             {
                 FlattenAll("session_window");
-                UpdateHud();
+                UpdatePanelStatus();
                 return;
             }
 
@@ -663,7 +663,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             else if (_entryPending)
                 AgeWorkingEntry();
 
-            UpdateHud();
             UpdatePanelStatus();
         }
 

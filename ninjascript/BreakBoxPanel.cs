@@ -21,6 +21,7 @@
 // latter loses its controls when a strategy is added or removed from the chart.
 #region Using declarations
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -728,40 +729,336 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Readouts
 
-        // ponytail: this is an interim patch, not the section's real shape. Task
-        // 64 replaced the fields this used to read (_atrText/_windowText/_hudBox
-        // etc. are gone with v1's HUD row) and Task 69 ("one batched dispatcher
-        // update per bar") is the task that rebuilds this into FillStatus /
-        // FillGates / FillHistory / ApplySnap over a single PanelSnap. Until
-        // then this only drives what Tasks 64-66 actually built: the status
-        // text and the header dot, so the dot is not a dead decoration.
+        // ONE snapshot per bar, built on the STRATEGY thread and applied by
+        // exactly ONE dispatcher callback. v1 posted five separate InvokeAsync
+        // closures per bar, each capturing live fields — which is both a torn
+        // read (the fields move between callbacks) and five context switches on
+        // a thread the strategy is forbidden from blocking.
+        private sealed class PanelSnap
+        {
+            public string Status = "", Headline = "", SessionA = "", SessionB = "", Equity = "", Stats = "";
+            public int StatusState;                             // 0 dim, 1 ok, 2 warn, 3 loss
+            public readonly string[] GateName = new string[GateRows];
+            public readonly string[] GateVal = new string[GateRows];
+            // 0 passed · 1 the blocker · 2 never evaluated · 3 not a gate on the
+            // active engine's ladder at all (the cloud's is shorter than the box's)
+            public readonly int[] GateState = new int[GateRows];
+            public readonly string[] Log = new string[3];
+            public double[] Pts = new double[0];
+            public double ZeroY;
+            public double WinN, BeN, LossN;
+            public readonly string[] TradeText = new string[3];
+            public readonly double[] TradeBar = new double[3];
+            public readonly int[] TradeState = new int[3];      // 0 dim (other config), 1 win, 2 loss
+        }
+
         private void UpdatePanelStatus()
         {
             if (_panelRoot == null || ChartControl == null)
                 return;
 
-            string status = _lockout ? ("LOCKED (" + _lockoutWhy + ")")
-                          : _inTrade ? ("IN TRADE " + (_dir > 0 ? "LONG" : "SHORT"))
-                          : _entryPending ? "WORKING"
-                          : !_atr.IsWarm ? "WARMING"
-                          : _uiAutoTrade ? "READY" : "MANUAL";
-            bool ready = !_lockout && _atr.IsWarm && _uiAutoTrade && !_inTrade && !_entryPending;
+            PanelSnap s = new PanelSnap();
+            FillStatus(s);
+            FillGates(s);
+            FillHistory(s);
+            for (int i = 0; i < 3; i++)
+                s.Log[i] = _log.Newest(i);
 
-            ChartControl.Dispatcher.InvokeAsync(new Action(() =>
-            {
-                if (_statusText != null) _statusText.Text = status;
-                if (_statusDot != null) _statusDot.Foreground = _lockout ? LossBrush : (ready ? OkBrush : DimBrush);
-            }));
+            ChartControl.Dispatcher.InvokeAsync(new Action(() => ApplySnap(s)));
         }
 
-        // ponytail: no-op. v1's daily P&L / trade-count HUD lost its TextBlocks
-        // in Task 64's chrome rewrite; the replacement is the HISTORY section
-        // (Task 68) plus Task 69's FillHistory, neither of which is this task's
-        // job. Kept as a stub so the two OnBarUpdate call sites still compile —
-        // Task 69 deletes both when UpdatePanelStatus becomes the only per-bar
-        // panel entry point.
-        private void UpdateHud()
+        // Shell-level blocks PREEMPT the gate ladder and replace the headline
+        // (§9.3). This ordering is the fix for the defect that started the
+        // rewrite: v1 showed READY while the box sat "(out of band)" and never
+        // connected the two, and the user watched a dead strategy for an hour.
+        private void FillStatus(PanelSnap s)
         {
+            if (_lockout)
+            {
+                s.Status = "LOCKED OUT (" + _lockoutWhy + ")";
+                s.StatusState = 3;
+                s.Headline = _lockoutWhy == "manual"
+                    ? "locked by hand — click LOCK OUT again to resume"
+                    : "day P&L " + _dayPnl.ToString("C2", CultureInfo.CurrentCulture);
+            }
+            else if (_inTrade)
+            {
+                s.Status = "IN TRADE " + (_dir > 0 ? "LONG" : "SHORT");
+                s.StatusState = 1;
+                s.Headline = _qty + " @ " + _bracket.EntryPx.ToString("0.00", CultureInfo.InvariantCulture)
+                           + "  stop " + _bracket.StopPx.ToString("0.00", CultureInfo.InvariantCulture)
+                           + (_bracket.BeApplied ? " (BE)" : "");
+            }
+            else if (_entryPending)
+            {
+                s.Status = "ENTRY WORKING";
+                s.StatusState = 2;
+                s.Headline = "trigger " + _pendingAction.TriggerPx.ToString("0.00", CultureInfo.InvariantCulture)
+                           + " — " + _entryBarsWaiting + " bars waiting";
+            }
+            else if (!_atr.IsWarm)
+            {
+                s.Status = "WARMING";
+                s.StatusState = 0;
+                s.Headline = "ATR " + _atr.BarsFed + "/" + AtrPeriod + " bars";
+            }
+            else if (!_uiAutoTrade)
+            {
+                s.Status = "AUTO-TRADE OFF";
+                s.StatusState = 2;
+                s.Headline = "the engines still track state — only entries are suppressed";
+            }
+            else
+            {
+                s.Status = "READY";
+                s.StatusState = 1;
+            }
+
+            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
+            int left = BbMath.HhmmToSecs(FlattenHhmm) - secs;
+            if (left < 0) left += 24 * 3600;
+            s.SessionA = string.Format(CultureInfo.InvariantCulture,
+                "atr {0:0.00}   bar {1}s   flat in {2}h{3:00}m",
+                _atr.IsWarm ? _atr.Value : 0.0, BarSeconds(), left / 3600, (left % 3600) / 60);
+            // The active stop source is NAMED, not merely lit on a button:
+            // `MA` means "far ribbon edge" at MaPeriod = RibbonSlow and
+            // something else entirely otherwise, and that is invisible in a
+            // three-letter toggle (§9.5).
+            s.SessionB = "stop " + _uiStopSource + " (period " + MaPeriod + ")   cfg " + _cfgHash;
+        }
+
+        // §4.2: the ladder shown is the report of the engine that would act
+        // NEXT under §4.1 ordering — Cloud when it is on, else Box. The two
+        // reports are never merged; merging them is how one engine's blocker
+        // ends up labelled with the other's gate names.
+        private void FillGates(PanelSnap s)
+        {
+            bool cloud = _uiCloudOn;
+            BbGateReport g = cloud ? _cloudState.Gate : _engState.Gate;
+            string[] names = cloud ? CloudGates : BoxGates;
+            int depth = g == null ? -1 : g.GateDepth;
+
+            for (int i = 0; i < GateRows; i++)
+            {
+                // The two ladders are not the same length — the box's is
+                // eleven deep, the cloud's twelve. Rows past the end of the
+                // ACTIVE engine's ladder are marked unused (3) and render as
+                // nothing, rather than borrowing the other engine's name for
+                // that index. Reaching for `names[i]` unguarded is an
+                // IndexOutOfRange on every box bar, and padding either array
+                // with the other's names would be the quieter, worse version
+                // of the same bug.
+                bool has = i < names.Length;
+                s.GateName[i] = has ? names[i] : "";
+                s.GateState[i] = has ? BbGateReport.RowState(i, depth) : 3;
+                s.GateVal[i] = "";
+            }
+
+            // Passed rows carry the value the shell can read without reaching
+            // into engine internals; the blocker carries the engine's own
+            // BlockDetail, which is the only place "has 0.42, needs 0.60" is
+            // known. A dimmed row deliberately carries nothing.
+            if (s.GateState[0] == 0)
+                s.GateVal[0] = _atr.Value.ToString("0.00", CultureInfo.InvariantCulture)
+                             + " (" + AtrPeriod + " bars)";
+
+            if (cloud && _cloudState != null)
+            {
+                if (s.GateState[1] == 0)
+                    s.GateVal[1] = (_cloudState.RegimeLatched > 0 ? "long" : _cloudState.RegimeLatched < 0 ? "short" : "none")
+                                 + " (latched " + Mins(_cloudState.RegimeLatchedAgeBars) + ")";
+                if (s.GateState[2] == 0)
+                    s.GateVal[2] = _cloudState.Armed
+                        ? "armed " + _cloudState.AgeBars + " bars ago"
+                        : "no token — " + _cloudState.BarsSinceLastArm + " bars since";
+            }
+
+            // Bounded by the ACTIVE ladder, not by GateRows: a depth the ladder
+            // has no name for is an engine/panel mismatch, and writing its
+            // detail into a blank row would hide the mismatch instead of it
+            // showing up as an unlabelled blocker.
+            if (depth >= 0 && depth < names.Length && g != null)
+                s.GateVal[depth] = g.BlockDetail == null ? "" : g.BlockDetail;
+
+            if (s.Headline.Length == 0)
+                s.Headline = g == null || g.Block == null || g.Block.Length == 0
+                    ? "all gates clear — waiting for the trigger bar"
+                    : g.Block;
+        }
+
+        private string Mins(int bars)
+        {
+            int sec = bars * BarSeconds();
+            return sec < 60 ? sec + "s" : (sec / 60) + "m";
+        }
+
+        private void FillHistory(PanelSnap s)
+        {
+            List<BbTradeRecord> view = BbHistory.View(_history, _histView);
+            double[] cum = BbHistory.CumulativeEquity(view);
+            double zeroY;
+            // The POINTS are computed here, as plain doubles. PointCollection is
+            // a Freezable and building one on this thread is exactly the
+            // cross-thread ownership bug the frozen brushes avoid.
+            s.Pts = BbHistory.SparkPoints(cum, ChartW, ChartH, out zeroY);
+            s.ZeroY = zeroY;
+
+            double total = cum.Length == 0 ? 0.0 : cum[cum.Length - 1];
+            s.Equity = (total >= 0 ? "+" : "") + total.ToString("C2", CultureInfo.CurrentCulture);
+
+            double biggest = 1.0;
+            for (int i = 0; i < view.Count; i++)
+            {
+                if (view[i].Pnl > 0) s.WinN++;
+                else if (view[i].Pnl < 0) s.LossN++;
+                else s.BeN++;
+                double abs = Math.Abs(view[i].Pnl);
+                if (abs > biggest) biggest = abs;
+            }
+            double decided = s.WinN + s.LossN;
+
+            // §68 amendment: the in-memory list is capped and drops from the
+            // FRONT, so a date-windowed view whose cutoff still reaches the
+            // OLDEST record we have cannot tell "no more trades happened" from
+            // "more trades happened, and they were dropped". Say so rather than
+            // draw a shorter curve that reads as a quiet stretch — the whole
+            // point of this chart is telling whether the running config is
+            // working, and a silent under-report defeats that. "100t" is never
+            // affected: the cap is sized well above what 100 trades needs.
+            bool maybeTruncated = _historyCapped && _histView != "100t"
+                && view.Count > 0 && _history.Count > 0 && view[0].Ts == _history[0].Ts;
+            string capNote = maybeTruncated
+                ? _histView + " (capped at " + BbHistory.MaxInMemory + ")   "
+                : "";
+            s.Stats = capNote + string.Format(CultureInfo.InvariantCulture,
+                "{0} trades   W{1} BE{2} L{3}   ·   {4} win",
+                view.Count, (int)s.WinN, (int)s.BeN, (int)s.LossN,
+                decided > 0 ? ((100.0 * s.WinN / decided).ToString("0", CultureInfo.InvariantCulture) + "%") : "--");
+
+            for (int i = 0; i < 3; i++)
+            {
+                int idx = view.Count - 1 - i;
+                if (idx < 0)
+                {
+                    s.TradeText[i] = "";
+                    s.TradeBar[i] = 0.0;
+                    continue;
+                }
+                BbTradeRecord r = view[idx];
+                s.TradeText[i] = string.Format(CultureInfo.InvariantCulture, "#{0} {1} {2}   {3}",
+                    idx + 1, r.Dir > 0 ? "LONG " : "SHORT",
+                    r.Ts.ToString("HH:mm", CultureInfo.InvariantCulture),
+                    (r.Pnl >= 0 ? "+" : "") + r.Pnl.ToString("0.00", CultureInfo.InvariantCulture));
+                s.TradeBar[i] = ChartW * Math.Abs(r.Pnl) / biggest;
+                // Trades from another configuration render DIMMED (§10). A
+                // parameter change has to show as a visible seam — silently
+                // mixing them is the contamination the hash exists to expose.
+                s.TradeState[i] = r.CfgHash != _cfgHash ? 0 : (r.Pnl >= 0 ? 1 : 2);
+            }
+        }
+
+        // The ONLY code in this file that runs on the WPF thread. It reads the
+        // snapshot and nothing else — no strategy field is touched from here,
+        // which is what makes the whole arrangement safe.
+        private void ApplySnap(PanelSnap s)
+        {
+            if (_panelRoot == null)
+                return;
+
+            Brush st = s.StatusState == 1 ? OkBrush : s.StatusState == 2 ? WarnBrush
+                     : s.StatusState == 3 ? LossBrush : DimBrush;
+            if (_statusDot != null) _statusDot.Foreground = st;
+            if (_statusText != null) _statusText.Text = s.Status;
+            if (_headline != null) _headline.Text = s.Headline;
+            if (_sessionA != null) _sessionA.Text = s.SessionA;
+            if (_sessionB != null) _sessionB.Text = s.SessionB;
+
+            for (int i = 0; i < GateRows; i++)
+            {
+                if (_gateName[i] == null) continue;
+                _gateName[i].Text = s.GateName[i];
+                _gateVal[i].Text = s.GateVal[i];
+                if (s.GateState[i] == 3)
+                {
+                    // Past the end of the active engine's ladder: not a gate at
+                    // all. Blank, not "not evaluated" — the cloud engine does
+                    // not HAVE four more gates it skipped.
+                    _gateMark[i].Text = ""; _gateVal[i].Text = "";
+                }
+                else if (s.GateState[i] == 0)
+                {
+                    _gateMark[i].Text = "OK"; _gateMark[i].Foreground = OkBrush;
+                    _gateName[i].Foreground = TextBrush; _gateVal[i].Foreground = DimBrush;
+                }
+                else if (s.GateState[i] == 1)
+                {
+                    _gateMark[i].Text = "✕"; _gateMark[i].Foreground = WarnBrush;
+                    _gateName[i].Foreground = WarnBrush; _gateVal[i].Foreground = WarnBrush;
+                }
+                else
+                {
+                    _gateMark[i].Text = "·"; _gateMark[i].Foreground = DimBrush;
+                    _gateName[i].Foreground = DimBrush;
+                    _gateVal[i].Text = "not evaluated"; _gateVal[i].Foreground = DimBrush;
+                }
+            }
+
+            for (int i = 0; i < LogRows; i++)
+                if (_logText[i] != null) _logText[i].Text = s.Log[i];
+
+            if (_equityText != null)
+            {
+                _equityText.Text = s.Equity;
+                _equityText.Foreground = s.Equity.StartsWith("-", StringComparison.Ordinal) ? LossBrush : OkBrush;
+            }
+            if (_statsText != null) _statsText.Text = s.Stats;
+
+            if (_equityLine != null)
+            {
+                PointCollection line = new PointCollection(s.Pts.Length / 2);
+                for (int i = 0; i < s.Pts.Length; i += 2)
+                    line.Add(new Point(s.Pts[i], s.Pts[i + 1]));
+                _equityLine.Points = line;
+
+                // The fill is the same polyline closed down to the zero
+                // baseline, not to the bottom of the box: an underwater segment
+                // has to shade the WRONG side of zero or the picture lies.
+                PointCollection fill = new PointCollection(line.Count + 2);
+                if (line.Count > 0)
+                {
+                    fill.Add(new Point(line[0].X, s.ZeroY));
+                    for (int i = 0; i < line.Count; i++) fill.Add(line[i]);
+                    fill.Add(new Point(line[line.Count - 1].X, s.ZeroY));
+                }
+                _equityFill.Points = fill;
+                _zeroLine.Y1 = s.ZeroY;
+                _zeroLine.Y2 = s.ZeroY;
+            }
+
+            // Star weights, so a zero-count segment collapses instead of
+            // rendering a misleading sliver.
+            if (_wCol != null)
+            {
+                _wCol.Width = new GridLength(s.WinN, GridUnitType.Star);
+                _beCol.Width = new GridLength(s.BeN, GridUnitType.Star);
+                _lCol.Width = new GridLength(s.LossN, GridUnitType.Star);
+            }
+
+            for (int i = 0; i < 3; i++)
+            {
+                if (_tradeText[i] == null) continue;
+                _tradeText[i].Text = s.TradeText[i];
+                _tradeText[i].Foreground = s.TradeState[i] == 0 ? DimBrush : TextBrush;
+                _tradeBar[i].Width = s.TradeBar[i];
+                _tradeBar[i].Background = s.TradeState[i] == 0
+                    ? new SolidColorBrush(Color.FromArgb(0x18, 0x6A, 0x72, 0x7E))
+                    : s.TradeState[i] == 1
+                        ? new SolidColorBrush(Color.FromArgb(0x30, 0x4C, 0xC3, 0x8C))
+                        : new SolidColorBrush(Color.FromArgb(0x30, 0xD9, 0x53, 0x4F));
+            }
+
+            Paint(_lockBtn, _lockout);
+            Paint(_autoBtn, _uiAutoTrade);
         }
 
         #endregion
