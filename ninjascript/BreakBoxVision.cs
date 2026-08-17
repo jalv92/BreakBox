@@ -58,6 +58,20 @@ namespace NinjaTrader.NinjaScript.Indicators
         // box engine and nothing about this picture is worth a dial for it.
         private const int SessionOpenHhmm = 1800;
 
+        // The cloud is drawn as ONE region per regime run, not one per bar: a
+        // 30s chart is ~780 bars a session and 780 draw objects is a memory
+        // leak with a chart attached.
+        private readonly List<string> _drawTags = new List<string>();
+        private int _tagSeq;
+        private int _segStartBar = -1;
+        private int _segRegime = int.MinValue;
+        private string _segTag = "";
+        private const int MaxDrawTags = 4000;
+
+        private static readonly Brush CloudUp = Brushes.MediumSeaGreen;
+        private static readonly Brush CloudDn = Brushes.IndianRed;
+        private static readonly Brush CloudFlat = Brushes.DimGray;
+
         #endregion
 
         #region Lifecycle
@@ -231,6 +245,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             // paints a gold candle on every subsequent bar of the same pullback.
             if (_lastAction.Fire)
                 _cloud.OnEntryFilled();
+
+            PaintCloud();
         }
 
         private BbBar ToBar()
@@ -243,6 +259,53 @@ namespace NinjaTrader.NinjaScript.Indicators
             b.Close = Close[0];
             b.Volume = Volume[0];
             return b;
+        }
+
+        #endregion
+
+        #region Painting
+
+        // The cloud: the band between the two ribbon EMAs, tinted by the
+        // LATCHED regime (spec §5.2 step 2). Latched, not instantaneous — the
+        // instantaneous regime zeroes on exactly the pullbacks the engine is
+        // waiting for, so tinting by it would strobe grey on every setup and
+        // show a market the engine does not believe it is in.
+        private void PaintCloud()
+        {
+            int regime = _cloudSt.RegimeLatched;
+            if (regime != _segRegime || _segStartBar < 0)
+            {
+                _segRegime = regime;
+                _segStartBar = CurrentBar;
+                _segTag = "bbv_cloud_" + (_tagSeq++);
+            }
+
+            // A region needs width. On the bar a segment opens there is none.
+            int startBarsAgo = CurrentBar - _segStartBar;
+            if (startBarsAgo < 1)
+                return;
+
+            Brush area = regime > 0 ? CloudUp : (regime < 0 ? CloudDn : CloudFlat);
+            DrawTag(Draw.Region(this, _segTag, startBarsAgo, 0, Values[0], Values[1], null, area, 20));
+        }
+
+        // Same tag-ring discipline as the strategy (BreakBoxStrategy.cs's own
+        // DrawTag) and for the same reason. The last-tag check keeps a region
+        // that is redrawn on every bar of its segment from filling the ring
+        // with one repeated name.
+        private void DrawTag(object drawn)
+        {
+            var d = drawn as DrawingTool;
+            if (d == null)
+                return;
+            if (_drawTags.Count > 0 && _drawTags[_drawTags.Count - 1] == d.Tag)
+                return;
+            _drawTags.Add(d.Tag);
+            while (_drawTags.Count > MaxDrawTags)
+            {
+                RemoveDrawObject(_drawTags[0]);
+                _drawTags.RemoveAt(0);
+            }
         }
 
         #endregion
