@@ -15,6 +15,8 @@ public static class CloudTests
         TokenMintAndElseIf();
         TokenKills();
         TokenRestoreOnExpiryAndRejection();
+        GoldCandleGatesLong();
+        GoldCandleGatesShort();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -320,5 +322,168 @@ public static class CloudTests
         T.Check(!st2.Armed && double.IsNaN(st2.Ext), "a fill spends the token for good");
         eng2.OnEntryRejected("late reject");
         T.Check(!st2.Armed, "and a late refusal cannot resurrect it");
+    }
+
+    // Gate tests seed a live token directly instead of driving sixty bars
+    // through the ribbon. The mint, the latch and the kill have their own tests
+    // in Tasks 21-23; a gate test that depends on all three fails for three
+    // reasons and diagnoses none of them.
+    private static BbCloudConfig GateCfg()
+    {
+        var c = new BbCloudConfig();
+        c.TickSize = 0.25;
+        c.TrendSlopeLookback = 10;
+        c.TrendSlopeAtr = 0.15;
+        c.RegimeMemory = 30;
+        c.PullbackMax = 20;
+        c.MinPullback = 1;
+        c.MinBarsBetween = 6;
+        c.CloseInRange = 0.60;
+        c.MinBarRangeAtr = 0.20;      // ATR 4.00 -> 0.80 points
+        c.MinLegAtr = 0.35;           // ATR 4.00 -> 1.40 points
+        c.TriggerLife = 4;
+        c.TriggerOffsetTicks = 1;
+        return c;
+    }
+
+    // The cloud owns no clock — the shell passes `secs` and never reads
+    // bar.Time — so these bars carry no timestamp on purpose.
+    private static BbBar B(double o, double h, double l, double c)
+    {
+        return new BbBar { Time = DateTime.MinValue, Open = o, High = h, Low = l, Close = c, Volume = 100 };
+    }
+
+    // BUG FIX (brief defect, see task-24-25-report.md): the brief's LiveToken
+    // seeded RegimeLatched/Armed/Ext directly but left the slope ring at
+    // SlopeFilled == 0. With TrendSlopeLookback == 10 the ring is 11 slots, and
+    // every gate test below drives exactly ONE OnBar call — so without this fix
+    // step 1's warmup gate blocks every single case and no test ever reaches
+    // the gate it names. Filling the ring flat at `eT` reproduces the fixture
+    // the tests' own comments describe ("a flat eT means the instantaneous
+    // regime reads 0") instead of just papering over the gap with an arbitrary
+    // value that would let the instantaneous regime latch out from under
+    // RegimeLatched and quietly stop the tests from proving what they claim to.
+    private static BbCloud LiveToken(BbCloudConfig cfg, BbCloudState st, int dir, double ext, double eT)
+    {
+        st.RegimeLatched = dir;
+        st.RegimeLatchedAgeBars = 0;
+        st.Armed = true;
+        st.Ext = ext;
+        st.AgeBars = 3;               // past MinPullback, far short of PullbackMax
+        st.BarsSinceLastArm = 99;     // no cooldown in the way
+        var eng = new BbCloud(cfg, st);    // sizes st.SlopeBuf
+        for (int k = 0; k < st.SlopeBuf.Length; k++)
+            st.SlopeBuf[k] = eT;
+        st.SlopeFilled = st.SlopeBuf.Length;
+        return eng;
+    }
+
+    private static void GoldCandleGatesLong()
+    {
+        T.Section("Cloud — the five gold-candle gates, long");
+
+        // Ribbon eF 101.00 / eS 100.50, trend eT 99.00, ATR 4.00. The token was
+        // minted on a touch of eS and its extreme sits at 100.00. A flat eT
+        // means the instantaneous regime reads 0 every bar — which is exactly
+        // the case the latch exists for, so these tests also prove the gates
+        // read `RegimeLatched` and never `regimeNow`.
+        const double eF = 101.0, eS = 100.5, eT = 99.0, atr = 4.0;
+
+        var cfg = GateCfg();
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, +1, 100.0, eT);
+        var a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(a.Fire, "all five gates pass");
+        T.CheckInt(a.Dir, +1, "long, in the latched regime's direction");
+        T.Check(string.IsNullOrEmpty(st.Gate.Block), "a firing bar leaves no blocker on the ladder");
+
+        // (a) the identical bar under a ribbon it never reclaimed.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, 103.5, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a close still inside the ribbon does not fire");
+        T.Check(st.Gate.Block == "reclaim", "the ladder names the reclaim gate (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 7, "reclaim sits at depth 7");
+
+        // (b) reclaims the ribbon, but on a down bar.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(103.0, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a down close does not fire a long");
+        T.Check(st.Gate.Block == "direction", "the ladder names the direction gate (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 8, "direction sits at depth 8");
+
+        // (c) same body, 2.1 points of upper wick: 1.90/4.00 = 0.475 < 0.60.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(101.2, 105.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a bar that gave back half its range does not fire");
+        T.Check(st.Gate.Block == "close-in-range", "the ladder names close-in-range (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 9, "close-in-range sits at depth 9");
+
+        // (d) a wickless 0.60-point bar against a 0.80-point floor.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(101.9, 102.5, 101.9, 102.5), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a doji-sized reclaim does not fire");
+        T.Check(st.Gate.Block == "bar range", "the ladder names the bar-range gate (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 10, "bar range sits at depth 10");
+
+        // (e) a qualifying bar whose leg from the pullback extreme is 1.30.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.4, eT);
+        a = c.OnBar(B(101.0, 101.7, 100.8, 101.65), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a 1.30-point leg misses the 1.40-point floor");
+        T.Check(st.Gate.Block == "leg", "the ladder names the leg gate (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 11, "leg sits at depth 11");
+
+        // (e) with the extreme lost. Every comparison against NaN is false, so
+        // without an explicit guard this bar fires on a token that is gone.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, double.NaN, eT);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a NaN pullback extreme fails CLOSED, not open");
+        T.Check(st.Gate.Block == "leg", "and it is reported as the leg gate (" + st.Gate.Block + ")");
+    }
+
+    private static void GoldCandleGatesShort()
+    {
+        T.Section("Cloud — the five gold-candle gates, short (a real mirror)");
+
+        // Mirrored ribbon: eF 99.00 below eS 99.50 below eT 101.00, regime -1,
+        // the token minted on a touch of eS from below with its extreme at
+        // 100.00. Same ATR, same two floors.
+        const double eF = 99.0, eS = 99.5, eT = 101.0, atr = 4.0;
+
+        var cfg = GateCfg();
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, -1, 100.0, eT);
+        var a = c.OnBar(B(98.8, 99.0, 97.0, 97.1), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(a.Fire, "all five gates pass, short");
+        T.CheckInt(a.Dir, -1, "short, in the latched regime's direction");
+
+        // (a) a close that is still above the ribbon.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 100.0, eT);
+        a = c.OnBar(B(98.8, 99.0, 97.0, 97.1), 36000, 96.5, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a close above the ribbon does not fire a short");
+        T.Check(st.Gate.Block == "reclaim", "reclaim, short (" + st.Gate.Block + ")");
+
+        // (b) below the ribbon, but on an up bar.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 100.0, eT);
+        a = c.OnBar(B(97.0, 99.0, 97.0, 97.1), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "an up close does not fire a short");
+        T.Check(st.Gate.Block == "direction", "direction, short (" + st.Gate.Block + ")");
+
+        // (c) measured from the HIGH for a short: (99.00-97.10)/4.00 = 0.475.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 100.0, eT);
+        a = c.OnBar(B(98.8, 99.0, 95.0, 97.1), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a 2.1-point lower wick does not fire a short");
+        T.Check(st.Gate.Block == "close-in-range", "close-in-range, short (" + st.Gate.Block + ")");
+
+        // (d) 0.60 points of range against the same 0.80-point floor.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 100.0, eT);
+        a = c.OnBar(B(98.1, 98.1, 97.5, 97.5), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a doji-sized reclaim does not fire a short");
+        T.Check(st.Gate.Block == "bar range", "bar range, short (" + st.Gate.Block + ")");
+
+        // (e) the leg runs DOWN from the extreme: 99.60 - 98.30 = 1.30.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 99.6, eT);
+        a = c.OnBar(B(98.9, 99.2, 98.3, 98.35), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a 1.30-point leg misses the floor, short");
+        T.Check(st.Gate.Block == "leg", "leg, short (" + st.Gate.Block + ")");
     }
 }

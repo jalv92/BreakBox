@@ -78,18 +78,26 @@ namespace BreakBoxCore
         // per entry IN THIS ORDER and the block string IS the row label, so an
         // engine writing a string absent from this array renders a blank row
         // instead of a blocker.
+        // NOTE (Task 24): the four suppression gates (Task 25) split "pullback"
+        // into "in trade" / "auto-trade" / "pullback age", and add "cooldown" as
+        // its own depth — so this array grew from 10 to 12 entries and the bar
+        // gates shifted from 5-9 to 7-11. Every Gate.Set call in this file was
+        // updated to match; this array is the one place a stale index would
+        // silently print the WRONG row label on the panel instead of erroring.
         public static readonly string[] GateLadder =
         {
-            "warmup",       // 0
-            "regime",       // 1
-            "token",        // 2
-            "pullback",     // 3
-            "cooldown",     // 4
-            "reclaim",      // 5
-            "direction",    // 6
-            "body",         // 7
-            "range",        // 8
-            "leg"           // 9
+            "warmup",         // 0
+            "regime",         // 1
+            "token",          // 2
+            "in trade",       // 3
+            "auto-trade",     // 4
+            "pullback age",   // 5
+            "cooldown",       // 6
+            "reclaim",        // 7
+            "direction",      // 8
+            "close-in-range", // 9
+            "bar range",      // 10
+            "leg"             // 11
         };
 
         public BbCloud(BbCloudConfig cfg, BbCloudState st)
@@ -197,7 +205,98 @@ namespace BreakBoxCore
                 return a;
             }
 
+            // ---- Step 5 (§5.2). Task 25 inserts the suppression and cooldown
+            // gates (depths 3-6) directly ABOVE this line; the bar gates keep
+            // depths 7-11 either way, so the panel's row labels never renumber.
+            if (!GoldCandle(bar, _st.RegimeLatched, eF, atr))
+                return a;                       // GoldCandle wrote the ladder
+
+            // Step 6 — the trigger price, the signal bar and the token's fate —
+            // is Task 25. All this bar can say yet is that the candle qualifies.
+            _st.Gate.Clear();
+            a.Fire = true;
+            a.Dir = _st.RegimeLatched;
             return a;
+        }
+
+        // The five gold-candle gates (§5.2 step 5), in ladder order. Each writes
+        // its OWN depth, because "READY" next to a dead engine is the defect §9
+        // exists to fix: the panel has to be able to name the one gate that
+        // refused, not just report that something did.
+        //
+        // The short is a REAL mirror, not a sign flip. (c) measures the close
+        // from the HIGH and (e) measures the leg DOWN from `Ext`; folding the two
+        // directions into `dir * (close - open) > 0` reads clever and is wrong
+        // for one of them.
+        private bool GoldCandle(BbBar bar, int dir, double eF, double atr)
+        {
+            // (a) reclaim — price is back OUT of the ribbon in the regime's
+            // direction. A CONTEXT gate, not a bar gate (§5.3): a textbook
+            // engulfing bar still inside the cloud is not a signal, and the
+            // first draft of the spec lost this distinction three times.
+            if (dir > 0 ? bar.Close <= eF : bar.Close >= eF)
+            {
+                _st.Gate.Set("reclaim", "close " + F2(bar.Close) + " vs ribbon " + F2(eF), 7);
+                return false;
+            }
+
+            // (b) direction — the reclaim has to be a bar in our direction. Both
+            // observed signal candles were solid bodies.
+            if (dir > 0 ? bar.Close <= bar.Open : bar.Close >= bar.Open)
+            {
+                _st.Gate.Set("direction", "close " + F2(bar.Close) + " vs open " + F2(bar.Open), 8);
+                return false;
+            }
+
+            // (c) close-in-range — how much of its range the bar kept. Through
+            // BbMath.CloseInRange and NEVER a hand-rolled ratio: Vision paints
+            // the same candle gold from the same helper, and a second copy of
+            // this arithmetic is how the picture starts lying about the engine.
+            double cir = BbMath.CloseInRange(bar, dir);
+            if (cir < _cfg.CloseInRange)
+            {
+                _st.Gate.Set("close-in-range", F2(cir) + " (need " + F2(_cfg.CloseInRange) + ")", 9);
+                return false;
+            }
+
+            // (d) bar range — a reclaim printed by a doji is a tick of drift.
+            // Calibrated against a trade we KNOW was taken: the reference's
+            // right-hand reclaim bar was 0.30 ATR, so anything above 0.30
+            // rejects a real entry (§5.4 marks the search 0.0-0.30 ONLY).
+            double range = bar.High - bar.Low;
+            if (range < _cfg.MinBarRangeAtr * atr)
+            {
+                _st.Gate.Set("bar range", F2(range) + " (need " + F2(_cfg.MinBarRangeAtr * atr) + ")", 10);
+                return false;
+            }
+
+            // (e) leg — how far this bar travelled from the pullback extreme.
+            // The NaN test is not defensive noise: a killed token leaves
+            // `Ext = NaN`, every comparison against NaN is false, and without it
+            // the `<` below fails OPEN and fires on a token that no longer
+            // exists.
+            if (double.IsNaN(_st.Ext))
+            {
+                _st.Gate.Set("leg", "no pullback extreme (token killed)", 11);
+                return false;
+            }
+            double leg = dir > 0 ? bar.High - _st.Ext : _st.Ext - bar.Low;
+            if (leg < _cfg.MinLegAtr * atr)
+            {
+                _st.Gate.Set("leg", F2(leg) + " from " + F2(_st.Ext)
+                                    + " (need " + F2(_cfg.MinLegAtr * atr) + ")", 11);
+                return false;
+            }
+
+            return true;
+        }
+
+        // Gate details are read by a human on a chart, so they are formatted
+        // invariantly rather than under NT8's UI culture: "0,42" in a ladder
+        // that elsewhere prints "0.60" reads as two different quantities.
+        private static string F2(double v)
+        {
+            return v.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
         }
 
         // The latch is the fix for the single worst defect in the first draft of
