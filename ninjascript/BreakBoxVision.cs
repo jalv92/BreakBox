@@ -72,6 +72,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static readonly Brush CloudDn = Brushes.IndianRed;
         private static readonly Brush CloudFlat = Brushes.DimGray;
 
+        // Gold = every gate passed. Dim gold = the BAR looked right and the
+        // CONTEXT did not. The dim bars are the free diagnostic: a session full
+        // of them means the candle gates are fine and the token/regime/leg
+        // gates are what is starving the strategy (spec §5.3).
+        private static readonly Brush GoldBrush = Brushes.Gold;
+        private static readonly Brush DimGoldBrush = Brushes.DarkGoldenrod;
+
         #endregion
 
         #region Lifecycle
@@ -247,6 +254,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _cloud.OnEntryFilled();
 
             PaintCloud();
+            PaintSignalBar(bar);
         }
 
         private BbBar ToBar()
@@ -287,6 +295,44 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             Brush area = regime > 0 ? CloudUp : (regime < 0 ? CloudDn : CloudFlat);
             DrawTag(Draw.Region(this, _segTag, startBarsAgo, 0, Values[0], Values[1], null, area, 20));
+        }
+
+        // VISION IS THE SOLE OWNER OF BarBrushes (spec §5.3, §12). The strategy
+        // never writes one. Two components painting the same pixels on the same
+        // chart is a bug that renders as a flicker and debugs as a mystery.
+        //
+        // Gold comes from the engine (it fired). Dim gold is recomputed HERE
+        // from gates b/c/d, which are pure functions of this one bar and need
+        // no engine state — so the engine keeps no reporting surface it would
+        // otherwise have to maintain. The ratio itself comes from
+        // BbMath.CloseInRange, the same function gate (c) uses, so the painted
+        // bar and the traded bar cannot drift apart.
+        private void PaintSignalBar(BbBar bar)
+        {
+            if (_lastAction.Fire)
+            {
+                BarBrushes[0] = GoldBrush;
+                return;
+            }
+
+            if (!_atr.IsWarm)
+                return;
+
+            // A bar gate is only meaningful against a direction, and the
+            // direction is the latched regime. With no regime there is nothing
+            // this bar could have been the signal for.
+            int dir = _cloudSt.RegimeLatched;
+            if (dir == 0)
+                return;
+
+            bool body = dir > 0 ? bar.Close > bar.Open : bar.Close < bar.Open;
+            // NaN on a flat bar makes this comparison false — the gate fails
+            // closed, which is the behaviour Task 80 pins.
+            bool shape = BbMath.CloseInRange(bar, dir) >= _cloudCfg.CloseInRange;
+            bool range = (bar.High - bar.Low) >= _cloudCfg.MinBarRangeAtr * _atr.Value;
+
+            if (body && shape && range)
+                BarBrushes[0] = DimGoldBrush;
         }
 
         // Same tag-ring discipline as the strategy (BreakBoxStrategy.cs's own
