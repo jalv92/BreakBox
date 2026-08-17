@@ -14,6 +14,7 @@ public static class CloudTests
         RegimeClearsThreeWays();
         TokenMintAndElseIf();
         TokenKills();
+        TokenRestoreOnExpiryAndRejection();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -262,5 +263,62 @@ public static class CloudTests
         }
         T.CheckInt(st3.RegimeLatched, -1, "the latch flipped");
         T.Check(!st3.Armed && double.IsNaN(st3.Ext), "and the flip killed the long token");
+    }
+
+    private static void TokenRestoreOnExpiryAndRejection()
+    {
+        T.Section("Cloud — expiry and rejection RESTORE the token (§5.2 steps 7, 9)");
+
+        // v1 burned the edge the moment a trigger armed: an expired, cancelled or
+        // refused entry spent the box without ever trading it. That is defect B3,
+        // and the same rule now applies to the cloud.
+        var cfg = Cfg();
+        var st = new BbCloudState();
+        var eng = new BbCloud(cfg, st);
+        int i = Uptrend(eng, 0, 10, 100.0, 4.0);
+
+        Pull(eng, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);   // mint
+        Pull(eng, i + 1, 105.5, 107.5, 106.5, 107.2, 107.4, 4.0); // age to 1
+        T.Check(st.Armed && st.AgeBars == 1, "token armed, one bar old");
+
+        // What step 6 does on a consumed trigger. Poked directly here because the
+        // trigger itself lands in Task 24; this pins the contract it must honour.
+        st.Armed = false;
+        st.BarsSinceLastArm = 0;
+        st.TriggerArmedBars = 3;
+
+        eng.OnTriggerExpired();
+        T.Check(st.Armed, "expiry RESTORES the token — it does not burn the edge (B3)");
+        T.CheckClose(st.Ext, 106.6, "ext is preserved across the restore");
+        T.CheckInt(st.AgeBars, 1, "and so is AgeBars — the pullback did not get younger");
+        T.CheckInt(st.TriggerArmedBars, 0, "the trigger clock resets");
+
+        st.Armed = false;                                        // consumed again
+        eng.OnEntryRejected("qty<1");
+        T.Check(st.Armed, "a refusal restores it too (every path in §11 B4)");
+
+        // A flip must NOT restore: the flip already killed the token, so ext is
+        // NaN and the restore has nothing to bring back. One guard, both cases.
+        for (int k = 0; k < 8; k++)
+        {
+            double eT = 104.5 - 0.5 * k, eS = eT - 2.0, eF = eS - 2.0, c = eF - 2.0;
+            eng.OnBar(Bar(i + 2 + k, c + 1.0, eS - 1.0, c - 0.5, c), Secs(Tm(i + 2 + k)),
+                      eF, eS, eT, 4.0, true, true, false);
+        }
+        T.CheckInt(st.RegimeLatched, -1, "regime flipped short");
+        eng.OnTriggerExpired();
+        T.Check(!st.Armed, "a flipped regime does NOT restore a token pointing the other way");
+
+        // And a FILLED token never comes back — a late reject after a fill would
+        // resurrect a trade that already happened.
+        var st2 = new BbCloudState();
+        var eng2 = new BbCloud(Cfg(), st2);
+        int j = Uptrend(eng2, 0, 10, 100.0, 4.0);
+        Pull(eng2, j, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
+        T.Check(st2.Armed, "armed before the fill");
+        eng2.OnEntryFilled();
+        T.Check(!st2.Armed && double.IsNaN(st2.Ext), "a fill spends the token for good");
+        eng2.OnEntryRejected("late reject");
+        T.Check(!st2.Armed, "and a late refusal cannot resurrect it");
     }
 }

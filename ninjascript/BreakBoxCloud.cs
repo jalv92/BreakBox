@@ -260,6 +260,53 @@ namespace BreakBoxCore
             _killWhy = why;
         }
 
+        // The shell calls this when the entry actually FILLS — not when it is
+        // submitted. A fill is the ONLY thing that spends a token for good.
+        // BarsSinceLastArm is deliberately untouched: step 6 zeroed it at consume
+        // time, and restarting the cooldown here would silently lengthen it by
+        // however many bars the stop order rested.
+        public void OnEntryFilled()
+        {
+            _st.Armed = false;
+            _st.Ext = double.NaN;
+            _st.AgeBars = 0;
+            _st.TriggerArmedBars = 0;
+            _killWhy = "filled";
+        }
+
+        // §5.2 step 7. The trigger outlived TriggerLife and the shell cancelled
+        // it. v1 burned the edge here — an expired trigger spent the box without
+        // a trade, which is precisely defect B3. The pullback that minted this
+        // token is still intact, so the token comes back.
+        public void OnTriggerExpired()
+        {
+            RestoreToken("trigger expired");
+        }
+
+        // §5.2 step 9. Every refusal path in the shell routes here (§11 B4:
+        // qty < 1, CancelWorkingEntry, OrderState.Rejected). A refusal is not a
+        // trade and must not cost one.
+        public void OnEntryRejected(string reason)
+        {
+            RestoreToken("rejected: " + reason);
+        }
+
+        private void RestoreToken(string why)
+        {
+            _st.TriggerArmedBars = 0;
+            _killWhy = why;
+
+            // One guard covers both refusals. A regime flip or clear ALWAYS kills
+            // the token first (step 4), and a fill clears ext too — so a NaN ext
+            // means either "the thesis is gone" or "this token already traded",
+            // and neither may come back. ext and AgeBars are otherwise preserved
+            // untouched: the pullback did not get younger while the order rested.
+            if (_st.RegimeLatched == 0 || double.IsNaN(_st.Ext))
+                return;
+
+            _st.Armed = true;
+        }
+
         #region Slope ring
 
         private void PushSlope(double v)
