@@ -23,6 +23,7 @@ public static class BoxTests
         SealFreezesTheEdges();
         InvalidateOnBreakAndOnAge();
         ValidityIsRelativeToEarlierBoxes();
+        ArmingDoesNotSpendTheEdge();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -284,5 +285,69 @@ public static class BoxTests
             u = u.AddSeconds(30);
         }
         T.Check(st2.Box.Valid, "1.0x the mean is in band");
+    }
+
+    private static void ArmingDoesNotSpendTheEdge()
+    {
+        T.Section("Box — BoxArmsPerEdge arms per edge per box, cooldown, inside-close reset");
+
+        var cfg = Cfg();                    // ArmsPerEdge 2, ArmCooldown 3, TriggerLife 1
+        cfg.BoxMeanSamples = 1;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        eng.SeedSealedRange(1.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box != null && st.Box.Valid, "a valid box exists");
+
+        // Bar 7 — the first break. Close 101.00 is outside the edge but inside
+        // the 1.0-point BoxDeadAtr tolerance, so the box survives to be armed
+        // again.
+        var a = Step(eng, t, 100.5, 101.25, 100.0, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(a.Fire, "a close beyond the edge arms");
+        T.CheckInt(a.Dir, +1, "long");
+        T.Check(!a.IsLimit, "the box entry is a stop, not a limit");
+        T.Check(a.Engine == BbEntryEngine.Break, "engine stamped");
+        T.CheckClose(a.TriggerPx, 101.50, "trigger = break bar high + TriggerOffsetTicks");
+        T.CheckClose(a.BoxHigh, 100.5, "the action carries the box");
+        T.CheckInt(a.BoxId, st.Box.Id, "and its id");
+        T.CheckInt(st.ArmsUp, 1, "one arm spent on the up edge");
+
+        // Bar 8 — still armed, nothing fires. One live trigger at a time is the
+        // §4.1 half this engine owns.
+        a = Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+        T.Check(!a.Fire, "no second trigger while one is working");
+        T.Check(st.Gate.Block == "armed", "and the gate says so (got '" + st.Gate.Block + "')");
+
+        // `canTrade` false suppresses ARMING and nothing else (B2). The box is
+        // still there, still valid, still aging — the engine simply may not act.
+        var st2 = new BbEngineState();
+        var eng2 = new BbEngine(cfg, st2);
+        eng2.SeedSealedRange(1.0);
+        DateTime u = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            eng2.OnBar(Bar(u, 100.0, 100.5, 99.5, 100.0), Secs(u), u.Date, 2.0, true, false, false);
+            u = u.AddSeconds(30);
+        }
+        T.Check(st2.Box != null && st2.Box.Valid, "the lifecycle ran with auto-trade off");
+
+        var blocked = eng2.OnBar(Bar(u, 100.5, 101.25, 100.0, 101.0), Secs(u), u.Date,
+                                 2.0, true, false, false);
+        T.Check(!blocked.Fire, "a break does not arm while canTrade is false");
+        T.Check(st2.Gate.Block == "auto-trade", "and the gate names it (got '" + st2.Gate.Block + "')");
+        T.CheckInt(st2.ArmsUp, 0, "no arm was spent");
+
+        // Every depth any Gate.Set passes must index a real rung. Cheap, and it
+        // catches the one-sided edit that would otherwise only show up as a
+        // mislabelled row on a chart.
+        T.CheckInt(BbEngine.GateLadder.Length, 11, "the box ladder has 11 rungs");
+        T.Check(BbEngine.GateLadder[10] == "cooldown", "cooldown is its own rung, not sharing 9 with arms");
     }
 }

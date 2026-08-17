@@ -174,11 +174,28 @@ namespace BreakBoxCore
 
     public sealed class BbEngine
     {
-        // The gate ladder, in the order the panel renders it:
-        //   0 atr warm · 1 box warming (cold start) · 2 box · 3 box valid
-        //   4 auto-trade · 5 window · 6 budget · 7 armed · 8 break · 9 arms
         private readonly BbConfig _cfg;
         private readonly BbEngineState _st;
+
+        // The ladder Phase 4's panel renders by index. `BbGateReport.GateDepth` is
+        // an index INTO THIS ARRAY — the two are one contract, so a rung added
+        // here without a Gate.Set to match (or the reverse) shows the operator a
+        // blocker that is not the real one. That is worse than no ladder: the
+        // panel exists to stop the strategy being silent about why it is idle.
+        public static readonly string[] GateLadder =
+        {
+            "atr warm",     // 0
+            "box warming",  // 1  cold start — fewer than BoxMeanSamples boxes sealed
+            "box",          // 2  no sealed box yet
+            "box valid",    // 3  sealed but outside the range band
+            "auto-trade",   // 4  engine off, or locked out
+            "window",       // 5
+            "budget",       // 6
+            "armed",        // 7
+            "break",        // 8
+            "arms",         // 9  arms-per-edge spent
+            "cooldown"      // 10
+        };
 
         public BbEngine(BbConfig cfg, BbEngineState st)
         {
@@ -288,8 +305,124 @@ namespace BreakBoxCore
                 return a;
             }
 
-            _st.Gate.Set("break", "close inside " + F(box.High) + " / " + F(box.Low), 8);
+            // Engine-off shares the AUTO-TRADE row rather than owning one of its
+            // own. The ladder has exactly eleven rungs and the panel renders them
+            // by INDEX (§9.3): an extra block emitted at an existing depth makes
+            // the panel label the wrong row, which is worse than no row at all.
+            // The two are the same question anyway — "may this engine arm right
+            // now" — so they differ only in the detail string.
+            if (!_cfg.EnableBreak)
+            {
+                _st.Gate.Set("auto-trade", "box engine off", 4);
+                return a;
+            }
+
+            // `canTrade` suppresses ARMING only. Everything above it — the
+            // window, the samples, formation, seal, death, the inside-close
+            // reset — has already run on this bar (B2).
+            if (!canTrade)
+            {
+                _st.Gate.Set("auto-trade", "off or locked out", 4);
+                return a;
+            }
+
+            if (!BbMath.InWindow(secs, BbMath.HhmmToSecs(_cfg.EntryWindowStartHhmm),
+                                       BbMath.HhmmToSecs(_cfg.EntryWindowEndHhmm)))
+            {
+                _st.Gate.Set("window", "outside the entry window", 5);
+                return a;
+            }
+
+            if (_st.TradesThisBox >= _cfg.MaxTradesPerBox || _st.TradesToday >= _cfg.MaxTradesPerDay)
+            {
+                _st.Gate.Set("budget", _st.TradesThisBox + "/" + _cfg.MaxTradesPerBox + " box, "
+                                       + _st.TradesToday + "/" + _cfg.MaxTradesPerDay + " day", 6);
+                return a;
+            }
+
+            // One live trigger and one position at a time, across both engines
+            // (§4.1). The shell owns the cross-engine half; this is our half.
+            if (positioned || _st.Armed)
+            {
+                _st.Gate.Set("armed", _st.Armed
+                    ? "trigger working, " + _st.TriggerArmedBars + " bars"
+                    : "already positioned", 7);
+                return a;
+            }
+
+            // The break must CLOSE beyond the edge. A wick through it is the
+            // single most common way a box-breakout backtest lies to you: it
+            // counts the touch as a break and the reversal as bad luck. v1 made
+            // that a dial; it is not one.
+            bool up = bar.Close > box.High && _cfg.AllowLong;
+            bool dn = bar.Close < box.Low && _cfg.AllowShort;
+            if (!up && !dn)
+            {
+                _st.Gate.Set("break", "close " + F(bar.Close) + " inside "
+                                      + F(box.High) + " / " + F(box.Low), 8);
+                return a;
+            }
+
+            int dir = up ? +1 : -1;
+            int arms = up ? _st.ArmsUp : _st.ArmsDn;
+
+            // ARMING DOES NOT SPEND THE EDGE. v1 set a boolean latch on arm, so
+            // an expired, cancelled or refused trigger burned the box without a
+            // trade (B3). Here the edge carries BoxArmsPerEdge attempts, spaced
+            // by BoxArmCooldown bars and refilled by an inside close. The
+            // cooldown is what keeps this from becoming the opposite bug — a
+            // sustained break re-arming on every single bar.
+            if (arms >= _cfg.BoxArmsPerEdge)
+            {
+                _st.Gate.Set("arms", arms + "/" + _cfg.BoxArmsPerEdge + " spent on this edge", 9);
+                return a;
+            }
+
+            int since = _st.BarCount - _st.LastArmBar;
+            if (since < _cfg.BoxArmCooldown)
+            {
+                // Depth 10, not 9: "arms" and "cooldown" are two different
+                // blockers and the panel renders one row per depth — sharing 9
+                // would have the panel label whichever fires with the other's
+                // name.
+                _st.Gate.Set("cooldown", (_cfg.BoxArmCooldown - since) + " bars left", 10);
+                return a;
+            }
+
+            // The trigger sits beyond the BREAK BAR's extreme, not beyond the box
+            // edge: on a bar that closes 12 points through the level, a trigger
+            // at edge+1 tick is already deep inside the market and fills at
+            // whatever the next print happens to be.
+            double trig = BbMath.RoundToTick(dir > 0
+                ? bar.High + _cfg.TriggerOffsetTicks * _cfg.TickSize
+                : bar.Low - _cfg.TriggerOffsetTicks * _cfg.TickSize, _cfg.TickSize);
+
+            Arm(dir, trig);
+
+            a.Fire = true;
+            a.Dir = dir;
+            a.Engine = BbEntryEngine.Break;
+            a.TriggerPx = trig;
+            a.IsLimit = false;
+            a.SignalBarHigh = bar.High;
+            a.SignalBarLow = bar.Low;
+            a.BoxHigh = box.High;
+            a.BoxLow = box.Low;
+            a.BoxId = box.Id;
+            a.Why = dir > 0 ? "box_up" : "box_dn";
+            _st.Gate.Clear();
             return a;
+        }
+
+        private void Arm(int dir, double trig)
+        {
+            _st.Armed = true;
+            _st.ArmDir = dir;
+            _st.ArmTriggerPx = trig;
+            _st.TriggerArmedBars = 0;
+            _st.LastArmBar = _st.BarCount;
+            if (dir > 0) _st.ArmsUp++;
+            else _st.ArmsDn++;
         }
 
         // Called on the FILL, not on the submit: a trigger that never filled
@@ -354,7 +487,23 @@ namespace BreakBoxCore
             // every box is a one-bar dead zone in the only quiet tape the model
             // trades.
             Invalidate(bar, atr);
+            TrackInside(bar);
             Form(bar, hi, lo);
+        }
+
+        // A close within both edges of the SEALED box refills the arm budget.
+        // It lives in the lifecycle, not in the entry ladder: the box's arm
+        // budget is a property of the box, and freezing it while AUTO-TRADE is
+        // off would hand the user a box that can never be traded again.
+        private void TrackInside(BbBar bar)
+        {
+            if (_st.Box == null)
+                return;
+            if (bar.Close <= _st.Box.High && bar.Close >= _st.Box.Low)
+            {
+                _st.ArmsUp = 0;
+                _st.ArmsDn = 0;
+            }
         }
 
         private void Invalidate(BbBar bar, double atr)
