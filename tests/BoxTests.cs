@@ -18,6 +18,8 @@ public static class BoxTests
     public static void Run()
     {
         ColdStartIsHardDisabled();
+        SampleRingIsNotSelfSelected();
+        FormationExcludesTheCurrentBar();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -87,5 +89,64 @@ public static class BoxTests
 
         T.CheckInt(fires, 0, "nothing fires before BoxMeanSamples boxes have sealed");
         T.Check(st.Gate.Block == "box warming", "the gate names the cold start (got '" + st.Gate.Block + "')");
+    }
+
+    private static void SampleRingIsNotSelfSelected()
+    {
+        T.Section("Box — the sample ring is fed on EVERY bar, pass or fail");
+
+        var cfg = Cfg();                    // BoxLookback = 4
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+
+        DateTime t = Open;
+        for (int i = 0; i < 30; i++)        // tight: range 1.0
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        for (int i = 0; i < 30; i++)        // wide: range 20.0 — fails formation every bar
+        {
+            Step(eng, t, 100.0, 110.0, 90.0, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+
+        // 60 bars, the first 4 with no full window yet. If sampling were gated
+        // on the formation test the 30 wide bars would contribute nothing and
+        // this would read 26 — the feedback loop that tightens the percentile
+        // forever until no box can ever form.
+        T.CheckInt(st.SampleFilled, 56, "every bar with a full window contributes one sample");
+    }
+
+    private static void FormationExcludesTheCurrentBar()
+    {
+        T.Section("Box — the formation window is MAX(High,N)[1], not [0]");
+
+        var cfg = Cfg();
+        cfg.BoxMinBars = 999;               // nothing seals: this test is about FORMATION alone
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+
+        DateTime t = Open;
+        for (int i = 0; i < 30; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.CandOpen, "a quiet stretch is a candidate");
+        T.CheckClose(st.CandHigh, 100.5, "candidate high");
+        T.CheckClose(st.CandLow, 99.5, "candidate low");
+
+        // A 60-point bar. Its own range may NOT enter the window it is being
+        // tested against — that is the one-bar lookahead that lets a backtest
+        // measure the break it is about to trade.
+        Step(eng, t, 100.0, 150.0, 90.0, 100.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(st.CandOpen, "the current bar does not widen its own window");
+        T.CheckClose(st.CandHigh, 100.5, "candidate high is still the quiet window's");
+
+        // On the NEXT bar it does enter the window, and the candidate dies.
+        Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+        T.Check(!st.CandOpen, "one bar later the wide bar is in the window and formation fails");
     }
 }
