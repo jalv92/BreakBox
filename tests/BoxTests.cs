@@ -24,6 +24,8 @@ public static class BoxTests
         InvalidateOnBreakAndOnAge();
         ValidityIsRelativeToEarlierBoxes();
         ArmingDoesNotSpendTheEdge();
+        CooldownAndArmCapAcrossExpiries();
+        ExpirySpendsAnArmRejectionRefundsIt();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -349,5 +351,134 @@ public static class BoxTests
         // mislabelled row on a chart.
         T.CheckInt(BbEngine.GateLadder.Length, 11, "the box ladder has 11 rungs");
         T.Check(BbEngine.GateLadder[10] == "cooldown", "cooldown is its own rung, not sharing 9 with arms");
+    }
+
+    // The §6.2 half that Task 46 could not assert: every one of these steps
+    // needs a trigger to EXPIRE, and until AgeTrigger exists the engine stays
+    // armed forever and the box is never re-armable.
+    private static void CooldownAndArmCapAcrossExpiries()
+    {
+        T.Section("Box — cooldown between arms, a hard cap per edge, and the inside-close refill");
+
+        var cfg = Cfg();                    // ArmsPerEdge 2, ArmCooldown 3, TriggerLife 1
+        cfg.BoxMeanSamples = 1;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        eng.SeedSealedRange(1.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+
+        // Bar 7 — the first break arms. Close 101.00 is outside the edge but
+        // inside the 1.0-point BoxDeadAtr tolerance, so the box survives.
+        var a = Step(eng, t, 100.5, 101.25, 100.0, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(a.Fire && st.ArmsUp == 1, "armed once");
+
+        // Bar 8 — still working. Bar 9 — the trigger expires (TriggerLife 1),
+        // but the cooldown is 3 bars from the ARM, so the edge is not re-armed
+        // on the spot: that is what stops a sustained break re-arming every bar.
+        Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        a = Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(!a.Fire, "expiry does not re-arm inside the cooldown");
+        T.Check(st.Gate.Block == "cooldown", "the gate names the cooldown (got '" + st.Gate.Block + "')");
+
+        // Bar 10 — cooldown served. The EDGE was not spent by the first arm:
+        // v1's boolean latch would have burned the box here without a trade.
+        a = Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(a.Fire, "the second arm of the edge fires");
+        T.CheckInt(st.ArmsUp, 2, "two arms spent");
+
+        // Bars 11-13 — expire, serve the cooldown, and find the budget gone.
+        for (int i = 0; i < 3; i++)
+        {
+            a = Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(!a.Fire, "BoxArmsPerEdge is a hard cap per edge per box");
+        T.Check(st.Gate.Block == "arms", "the gate names it (got '" + st.Gate.Block + "')");
+
+        // A close back INSIDE the sealed box refills both counters.
+        Step(eng, t, 101.0, 101.0, 99.8, 100.0, 2.0);
+        t = t.AddSeconds(30);
+        T.CheckInt(st.ArmsUp, 0, "an inside close of the sealed box resets the arm counters");
+
+        a = Step(eng, t, 100.0, 101.25, 99.9, 101.0, 2.0);
+        T.Check(a.Fire, "and the edge is armable again");
+    }
+
+    private static void ExpirySpendsAnArmRejectionRefundsIt()
+    {
+        T.Section("Box — expiry spends an arm, a refusal refunds it");
+
+        var cfg = Cfg();
+        cfg.BoxMeanSamples = 1;
+        cfg.TriggerLife = 2;
+        // Widened from Cfg()'s default of 3. AgeTrigger fires on
+        // TriggerArmedBars > TriggerLife, so a TriggerLife of 2 expires on the
+        // THIRD bar after the arm (bars 8, 9, 10 count 1, 2, 3) — the same bar
+        // the default 3-bar cooldown would also clear on. Left at 3 the engine
+        // auto-re-arms on that same bar, in the same OnBar call that just
+        // expired the first trigger, before this test ever gets to exercise a
+        // deliberate refusal. Widening it keeps the two clocks from colliding
+        // so "expired, not yet re-armed" is an actual observable state.
+        cfg.BoxArmCooldown = 6;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        eng.SeedSealedRange(1.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        var a = Step(eng, t, 100.5, 101.25, 100.0, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(a.Fire && st.Armed, "armed");
+
+        // The ENGINE owns the clock and the shell mirrors it (B6). Two clocks —
+        // one counting from arm, one from submit — is how v1 ended up believing
+        // it was disarmed while a stop order still rested at the exchange.
+        // Three bars, not two: TriggerArmedBars must exceed TriggerLife (2), so
+        // it takes bars 8, 9 AND 10 (1, 2, 3) before AgeTrigger expires it.
+        for (int i = 0; i < 3; i++)
+        {
+            Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(!st.Armed, "the engine expires its own trigger after TriggerLife");
+        T.CheckInt(st.ArmsUp, 1, "expiry SPENDS the arm — the market declined a live trigger");
+
+        // Idempotent: the shell mirrors the same expiry and must not
+        // double-count it.
+        eng.OnTriggerExpired();
+        T.CheckInt(st.ArmsUp, 1, "the shell's mirrored expiry is a no-op");
+
+        // A refusal is OURS, not the market's: nothing was offered, so the arm
+        // comes back. The cooldown does not — that is what stops a refusal loop
+        // from re-arming on the very next bar.
+        for (int i = 0; i < 3; i++)
+        {
+            a = Step(eng, t, 101.0, 101.25, 100.6, 101.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(a.Fire, "re-armed after the cooldown");
+        T.CheckInt(st.ArmsUp, 2, "two arms spent");
+        eng.OnEntryRejected("qty<1");
+        T.Check(!st.Armed, "a refusal disarms");
+        T.CheckInt(st.ArmsUp, 1, "and refunds the arm");
+
+        // A FILL is what costs budget — not a submit.
+        eng.OnEntryFilled();
+        T.CheckInt(st.TradesThisBox, 1, "the fill costs box budget");
+        T.CheckInt(st.TradesToday, 1, "and daily budget");
     }
 }

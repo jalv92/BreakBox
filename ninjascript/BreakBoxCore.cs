@@ -425,6 +425,18 @@ namespace BreakBoxCore
             else _st.ArmsDn++;
         }
 
+        // ONE clock, owned by the engine; the shell mirrors it (B6). v1 counted
+        // BreakArmedBars from the arm and _entryBarsWaiting from the submit, and
+        // neither cancelled the other's object.
+        private void AgeTrigger()
+        {
+            if (!_st.Armed)
+                return;
+            _st.TriggerArmedBars++;
+            if (_st.TriggerArmedBars > _cfg.TriggerLife)
+                OnTriggerExpired();
+        }
+
         // Called on the FILL, not on the submit: a trigger that never filled
         // consumed no budget, and counting it here is how MaxTradesPerBox = 1
         // silently becomes zero trades on a day of cancelled entries.
@@ -435,23 +447,29 @@ namespace BreakBoxCore
             Disarm();
         }
 
-        // The shell refused, cancelled or lost the entry this engine armed. The
-        // trade was never taken, so the edge is handed back — preserved from v1
-        // (§11 B3/B4) across the rewrite. A no-op today (nothing arms yet) but
-        // the shell's OnEntryRejected routing (§4.1) must keep compiling and the
-        // reason must keep landing in LastDisarmReason for its log line.
-        public void OnEntryRejected(string reason)
+        // The market declined a live trigger. That IS an attempt, so the arm
+        // stays spent: refunding it here would let a sustained break outside the
+        // box re-arm forever, which is v1's failure mode seen from the other
+        // side. Idempotent, because the shell mirrors this call.
+        public void OnTriggerExpired()
         {
-            _st.DisarmReason = "refused:" + reason;
+            if (!_st.Armed)
+                return;
+            _st.DisarmReason = "expired";
             Disarm();
         }
 
-        // The trigger ran out its own clock and the shell has now cancelled the
-        // order that went with it. Idempotent, like v1: the shell calls it for
-        // the owning engine without asking whether it needs to first.
-        public void OnTriggerExpired()
+        // WE refused the trade — qty < 1, a cancel, a broker rejection (B4).
+        // Nothing was ever offered to the market, so the arm is refunded. The
+        // COOLDOWN is not: it is the only thing standing between a repeating
+        // refusal and a re-arm on every bar.
+        public void OnEntryRejected(string reason)
         {
-            _st.DisarmReason = "expired";
+            if (!_st.Armed)
+                return;
+            _st.DisarmReason = "refused:" + reason;
+            if (_st.ArmDir > 0 && _st.ArmsUp > 0) _st.ArmsUp--;
+            else if (_st.ArmDir < 0 && _st.ArmsDn > 0) _st.ArmsDn--;
             Disarm();
         }
 
@@ -475,6 +493,8 @@ namespace BreakBoxCore
 
         private void Lifecycle(BbBar bar, double atr)
         {
+            AgeTrigger();
+
             double hi, lo;
             bool full = WindowRange(out hi, out lo);
             Push(bar);
