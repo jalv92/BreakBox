@@ -1196,12 +1196,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                     _lastStopSent = double.NaN;
                     SubmitStop(d.StopMoved ? "tier:be" : "tier:resize");
                     DrawLevels();
+                    return;
                 }
-                return;
+
+                // The last tier emptied the position. Returning here — which is
+                // what this did — skipped the close-out below, so `_inTrade`
+                // stayed true for the rest of the session, the `in trade` rung
+                // blocked BOTH engines, and the trade was never journalled. The
+                // engine already announces this case as d.Why == "tier_flat";
+                // the shell has to act on it instead of dropping it.
+                break;
             }
 
-            // Any exit that leaves us flat closes the trade out.
-            if (_inTrade && Position.MarketPosition == MarketPosition.Flat)
+            // Any exit that leaves us flat closes the trade out. `QtyOpen` is
+            // checked FIRST and on its own: inside an execution event NT8 has not
+            // necessarily updated Position yet ([[nt8-order-event-race]]), so a
+            // condition resting only on MarketPosition loses the same race the
+            // rest of this shell is written to survive. Tier fills decrement
+            // QtyOpen; a stop or flatten fill does not, which is why the position
+            // check stays as the other half of the OR.
+            if (_inTrade && (_bracket.QtyOpen <= 0 || Position.MarketPosition == MarketPosition.Flat))
             {
                 // The exit order's own signal name is the only honest reason
                 // available here — BB_Stop / BB_TP2 / BB_Flatten. FlattenAll
