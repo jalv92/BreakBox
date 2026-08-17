@@ -353,7 +353,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            _statusText = Label("WARMING");
+            // NOT "WARMING", and not "--". Until the first bar closes nothing
+            // in this panel has been measured, and a placeholder that names a
+            // real state is the panel telling the operator something it does
+            // not know — the exact failure this component exists to end. It
+            // also persists indefinitely if the strategy is attached outside
+            // market hours, so "no data yet" and "warming up" must not look
+            // alike. Every one of these placeholders says which it is.
+            _statusText = Label(PlaceholderStatus);
             st.Children.Add(_statusDot);
             st.Children.Add(_statusText);
 
