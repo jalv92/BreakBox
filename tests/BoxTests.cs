@@ -20,6 +20,7 @@ public static class BoxTests
         RetraceNeedsExtension();
         Budgets();
         CanTradeGatesArmingOnly();
+        TriggerClockAndRefusals();
     }
 
     // 18:00 ET on an arbitrary day. Every test counts minutes from here.
@@ -347,5 +348,60 @@ public static class BoxTests
         a = eng.OnBar(Bar(t, 111, 113, 110.5, 112.0), Secs(t), t.Date, 4.0, true, true, false);
         T.CheckInt(eng.Box.Id, boxId, "the box survived the blocked bar");
         T.Check(a.Fire, "and the edge is still there to trade on re-enable");
+    }
+
+    private static void TriggerClockAndRefusals()
+    {
+        T.Section("Trigger — one clock in the engine, and what a refusal hands back");
+
+        var cfg = Cfg();
+        cfg.BoxSource = BbBoxSource.PriorPeriod;
+        cfg.HtfMinutes = 60;
+        cfg.EnableBreak = true;
+        cfg.RequireCloseOutside = true;
+        cfg.TriggerLife = 3;            // bars; Task 3 renamed it off the surface's spelling
+
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        Feed(eng, Open, 60, 110.0, 100.0, 4.0);
+
+        DateTime t = Open.AddMinutes(60);
+        eng.OnBar(Bar(t, 109, 112, 108.5, 111.0), Secs(t), t.Date, 4.0, true, true, false);
+        T.Check(eng.BreakArmed, "armed");
+
+        for (int i = 1; i <= 4; i++)
+        {
+            DateTime v = t.AddMinutes(i);
+            eng.OnBar(Bar(v, 111, 112.5, 110.5, 111.5), Secs(v), v.Date, 4.0, true, true, false);
+        }
+
+        // The shell reads exactly these two to decide whether its resting order
+        // is still wanted (§11 B6). v1 counted its own bars from SUBMIT while
+        // the engine counted from ARM and neither cancelled the other's object,
+        // so an inside-close disarm left a stop entry resting on a dead level.
+        T.Check(!eng.BreakArmed, "the engine's own clock expired the trigger");
+        T.Check(eng.LastDisarmReason == "expired", "and says why, so the shell can log the cancel");
+
+        // Idempotent: the shell acknowledges without asking whether it needs to.
+        eng.OnTriggerExpired();
+        T.Check(!eng.BreakArmed, "acknowledging an already-expired trigger changes nothing");
+
+        // A REFUSAL is not an expiry. The trade was never attempted, so the edge
+        // comes back and its next break may arm again.
+        var st2 = new BbEngineState();
+        var eng2 = new BbEngine(cfg, st2);
+        Feed(eng2, Open, 60, 110.0, 100.0, 4.0);
+        DateTime u = Open.AddMinutes(60);
+        var a = eng2.OnBar(Bar(u, 109, 112, 108.5, 111.0), Secs(u), u.Date, 4.0, true, true, false);
+        T.Check(a.Fire, "armed a trigger the shell is about to refuse");
+
+        eng2.OnEntryRejected("qty<1");
+        T.Check(!eng2.BreakArmed, "the refusal disarms");
+        T.CheckInt(st2.BreakSpentDir, 0, "and hands the edge back");
+
+        u = u.AddMinutes(1);
+        a = eng2.OnBar(Bar(u, 111, 113, 110.5, 112.0), Secs(u), u.Date, 4.0, true, true, false);
+        T.Check(a.Fire, "so the next break of that edge can still be taken");
+        T.CheckInt(st2.TradesThisBox, 0, "and no budget was spent by a trade nobody took");
     }
 }

@@ -168,6 +168,11 @@ namespace BreakBoxCore
         // trigger expires on its bar budget and the very next check sees a close
         // outside the edge and arms a fresh one, forever.
         public int BreakSpentDir;
+        // Why the last disarm happened. The shell mirrors the engine's clock
+        // (§11 B6) and logs this when it cancels the order that went with it —
+        // "the order vanished" with no reason is how a live session becomes
+        // unauditable after the fact.
+        public string DisarmReason = "";
 
         // Retrace state
         public int ExtDir;                      // direction of the excursion being tracked, 0 = none
@@ -283,6 +288,35 @@ namespace BreakBoxCore
             _st.TradesToday++;
             DisarmBreak("filled");
             ClearExcursion();
+        }
+
+        // The shell refused, cancelled or lost the entry this engine armed. The
+        // trade was never taken, so the edge is handed back: v1 marked it spent
+        // at ARM time (§11 B3), which turns one refused order into a whole
+        // session with that edge silently dead.
+        public void OnEntryRejected(string reason)
+        {
+            DisarmBreak("refused:" + reason);
+            _st.BreakSpentDir = 0;
+        }
+
+        // The trigger ran out its own clock and the shell has now cancelled the
+        // order that went with it. There is nothing to undo — the clock lives
+        // here and DisarmBreak already ran on the bar that expired it — so this
+        // only acknowledges, and stays idempotent because the shell calls it for
+        // the owning engine without asking first.
+        //
+        // It deliberately does NOT hand the edge back the way a refusal does: an
+        // expiry means price sat outside that edge for the whole trigger life
+        // without filling, and re-arming there on the next bar is exactly the
+        // every-bar re-arm loop the spent latch exists to stop. Expiry keeps the
+        // edge spent, and still does after §6.2 — what changes there is the SHAPE
+        // of the bound, not the verdict: the single latch becomes `BoxArmsPerEdge`
+        // attempts. That is a budget, not a refund.
+        public void OnTriggerExpired()
+        {
+            if (_st.BreakArmed)
+                DisarmBreak("expired");
         }
 
         #region Box construction
@@ -445,6 +479,7 @@ namespace BreakBoxCore
             _st.BreakDir = 0;
             _st.BreakTriggerPx = 0.0;
             _st.BreakArmedBars = 0;
+            _st.DisarmReason = why;
         }
 
         // Has price closed back inside the box, killing the break thesis?
@@ -463,6 +498,7 @@ namespace BreakBoxCore
         public bool BreakArmed { get { return _st.BreakArmed; } }
         public double BreakTriggerPx { get { return _st.BreakTriggerPx; } }
         public int BreakDir { get { return _st.BreakDir; } }
+        public string LastDisarmReason { get { return _st.DisarmReason; } }
 
         #endregion
 
