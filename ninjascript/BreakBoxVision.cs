@@ -79,6 +79,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static readonly Brush GoldBrush = Brushes.Gold;
         private static readonly Brush DimGoldBrush = Brushes.DarkGoldenrod;
 
+        private BbConfig _boxCfg;
+        private BbEngineState _boxSt;
+        private BbEngine _boxEngine;
+        private int _lastDrawnBoxId = -1;
+
+        // White, like the reference. The cyan 4H rectangle in those frames is
+        // distant context and is NOT this object (spec §1).
+        private static readonly Brush BoxBrush = Brushes.White;
+
         #endregion
 
         #region Lifecycle
@@ -116,6 +125,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 TriggerLifeSec = 120;
                 TriggerOffsetTicks = 1;
                 AtrPeriod = 14;
+
+                // ---- Box, spec §6.3
+                BoxLookbackSec = 210;
+                BoxMinBars = 2;
+                BoxRangePctile = 35.0;
+                BoxSampleN = 200;
+                BoxMeanSamples = 20;
+                BoxValidLo = 0.4;
+                BoxValidHi = 2.5;
+                BoxDeadAtr = 0.5;
+                BoxMaxAgeSec = 1800;
+                BoxArmsPerEdge = 2;
+                BoxArmCooldownSec = 180;
             }
             else if (State == State.DataLoaded)
             {
@@ -136,6 +158,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // keep in sync with TrendSlopeLookback for no benefit.
                 _cloudSt = new BbCloudState();
                 _cloud = new BbCloud(_cloudCfg, _cloudSt);
+
+                _boxSt = new BbEngineState();
+                _boxEngine = new BbEngine(_boxCfg, _boxSt);
 
                 Print(string.Format(CultureInfo.InvariantCulture,
                     "BreakBoxVision: bar = {0}s -> ribbon {1}/{2}, trend {3} bars. "
@@ -213,6 +238,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             _cloudCfg.MinBarsBetween = BbScale.Bars(MinBarsBetweenSec, b, 1);
             _cloudCfg.TriggerLife = BbScale.Bars(TriggerLifeSec, b, 1);
             _cloudCfg.TriggerOffsetTicks = TriggerOffsetTicks;
+
+            _boxCfg = new BbConfig();
+            _boxCfg.TickSize = TickSize;
+            _boxCfg.AtrPeriod = AtrPeriod;
+            _boxCfg.BoxLookback = BbScale.Bars(BoxLookbackSec, b, 2);
+            _boxCfg.BoxMinBars = BoxMinBars;
+            _boxCfg.BoxRangePctile = BoxRangePctile;
+            _boxCfg.BoxSampleN = BoxSampleN;
+            _boxCfg.BoxMeanSamples = BoxMeanSamples;
+            _boxCfg.BoxValidLo = BoxValidLo;
+            _boxCfg.BoxValidHi = BoxValidHi;
+            _boxCfg.BoxDeadAtr = BoxDeadAtr;
+            _boxCfg.BoxMaxAge = BbScale.Bars(BoxMaxAgeSec, b, 2);
+            _boxCfg.BoxArmsPerEdge = BoxArmsPerEdge;
+            _boxCfg.BoxArmCooldown = BbScale.Bars(BoxArmCooldownSec, b, 1);
         }
 
         #endregion
@@ -253,8 +293,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (_lastAction.Fire)
                 _cloud.OnEntryFilled();
 
+            // BOTH engines run, unconditionally. §4.1 arbitration is the
+            // STRATEGY's job; a calibration view that hid the box because the
+            // cloud armed first would hide exactly the trades you are trying to
+            // account for.
+            DateTime sessionDate = SessionDateOf(Time[0], secs);
+            BbAction boxAction = _boxEngine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, true, false);
+            if (boxAction.Fire)
+                _boxEngine.OnEntryFilled();
+
             PaintCloud();
             PaintSignalBar(bar);
+            PaintBox();
         }
 
         private BbBar ToBar()
@@ -267,6 +317,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             b.Close = Close[0];
             b.Volume = Volume[0];
             return b;
+        }
+
+        // Which trading day does this bar belong to? The ETH session opens at
+        // 18:00 ET, so an 18:30 bar belongs to the NEXT calendar day's session.
+        // Same rule as the strategy (BreakBoxStrategy.cs:416) — a different one
+        // here would roll the box engine's daily counters on a different bar
+        // and the picture would disagree for a reason that has nothing to do
+        // with the model.
+        private DateTime SessionDateOf(DateTime t, int secs)
+        {
+            return secs >= BbMath.HhmmToSecs(SessionOpenHhmm) ? t.Date.AddDays(1) : t.Date;
         }
 
         #endregion
@@ -333,6 +394,27 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (body && shape && range)
                 BarBrushes[0] = DimGoldBrush;
+        }
+
+        // One rectangle per SEALED box, drawn once when its Id changes. A box's
+        // edges never move after the seal (spec §6.1), so redrawing it every
+        // bar would buy nothing and cost 780 draw objects a session.
+        //
+        // Anchored on `SealedAt`, the bar that froze the edges — the same
+        // anchor the strategy's own DrawBox uses. Task 40's box has no
+        // AnchorStart: the candidate window that produced it is not part of the
+        // object, and the rectangle you want to see is the one the engine is
+        // trading, not the samples it measured.
+        private void PaintBox()
+        {
+            BbBox box = _boxEngine.Box;
+            if (box == null || box.Id == _lastDrawnBoxId)
+                return;
+            _lastDrawnBoxId = box.Id;
+
+            DrawTag(Draw.Rectangle(this, "bbv_box_" + box.Id, false,
+                                   box.SealedAt, box.Low, Time[0], box.High,
+                                   BoxBrush, BoxBrush, 6));
         }
 
         // Same tag-ring discipline as the strategy (BreakBoxStrategy.cs's own
@@ -417,6 +499,54 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty, Range(2, 500)]
         [Display(Name = "ATR period", Order = 15, GroupName = "01. Cloud")]
         public int AtrPeriod { get; set; }
+
+        [NinjaScriptProperty, Range(30, 7200)]
+        [Display(Name = "Box lookback (sec)", Description = "210 = the measured ~7-bar white rectangle at 30s", Order = 1, GroupName = "02. Box")]
+        public int BoxLookbackSec { get; set; }
+
+        [NinjaScriptProperty, Range(1, 50)]
+        [Display(Name = "Box min bars", Order = 2, GroupName = "02. Box")]
+        public int BoxMinBars { get; set; }
+
+        // double, and [Range(1.0, 99.0)], because that is exactly how Task 48
+        // types it on the strategy. Same dial, same resolution: an int here
+        // would quietly refuse the 35.5 you set on the strategy and Task 87
+        // asks you to keep the two surfaces identical dial-for-dial.
+        [NinjaScriptProperty, Range(1.0, 99.0)]
+        [Display(Name = "Box range percentile", Order = 3, GroupName = "02. Box")]
+        public double BoxRangePctile { get; set; }
+
+        [NinjaScriptProperty, Range(20, 5000)]
+        [Display(Name = "Box sample N", Order = 4, GroupName = "02. Box")]
+        public int BoxSampleN { get; set; }
+
+        [NinjaScriptProperty, Range(1, 500)]
+        [Display(Name = "Box mean samples", Description = "Cold start: no box engine until this many have sealed", Order = 5, GroupName = "02. Box")]
+        public int BoxMeanSamples { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 10.0)]
+        [Display(Name = "Box valid lo", Order = 6, GroupName = "02. Box")]
+        public double BoxValidLo { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 50.0)]
+        [Display(Name = "Box valid hi", Order = 7, GroupName = "02. Box")]
+        public double BoxValidHi { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 10.0)]
+        [Display(Name = "Box dead (ATR)", Order = 8, GroupName = "02. Box")]
+        public double BoxDeadAtr { get; set; }
+
+        [NinjaScriptProperty, Range(60, 86400)]
+        [Display(Name = "Box max age (sec)", Order = 9, GroupName = "02. Box")]
+        public int BoxMaxAgeSec { get; set; }
+
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Box arms per edge", Order = 10, GroupName = "02. Box")]
+        public int BoxArmsPerEdge { get; set; }
+
+        [NinjaScriptProperty, Range(0, 7200)]
+        [Display(Name = "Box arm cooldown (sec)", Order = 11, GroupName = "02. Box")]
+        public int BoxArmCooldownSec { get; set; }
 
         #endregion
     }
