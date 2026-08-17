@@ -21,6 +21,7 @@ public static class BoxTests
         SampleRingIsNotSelfSelected();
         FormationExcludesTheCurrentBar();
         SealFreezesTheEdges();
+        SealedBarsOwnExtremesAreExcludedFromItsOwnBox();
         InvalidateOnBreakAndOnAge();
         ValidityIsRelativeToEarlierBoxes();
         ArmingDoesNotSpendTheEdge();
@@ -233,6 +234,44 @@ public static class BoxTests
         }
         T.CheckInt(st.Box.Id, 1, "a live box is not replaced");
         T.CheckClose(st.Box.High, 100.5, "and its edges did not move");
+    }
+
+    // Pins the fact PaintBox() got wrong: the box's High/Low are the WINDOW's
+    // range (Time[1]..Time[BoxLookback], read by WindowRange() BEFORE Push
+    // adds the current bar — BreakBoxCore.cs:565), not the sealing bar's own.
+    // Form() only gates the sealing bar's CLOSE against that range
+    // (BreakBoxCore.cs:657) — never its wick — so a sealing bar with a close
+    // inside the window but a high/low deliberately outside it must still
+    // seal a box whose edges come from the window, not from that bar. This is
+    // the arithmetic a reader needs to get the drawn rectangle's right edge
+    // right (Time[1], not Time[0]): the Draw.Rectangle call itself is
+    // NT8-only and untestable here, but the range it draws is not.
+    private static void SealedBarsOwnExtremesAreExcludedFromItsOwnBox()
+    {
+        T.Section("Box — the sealing bar's own high/low are excluded from the box it seals");
+
+        var cfg = Cfg();                    // BoxLookback 4, BoxMinBars 2
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+
+        // Bars 1-5 are quiet (100.5/99.5) and fill the window plus open the
+        // first candidate — identical setup to SealFreezesTheEdges.
+        DateTime t = Open;
+        for (int i = 0; i < 5; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box == null, "not yet sealed");
+
+        // Bar 6 seals it. Close 100.0 sits inside the window's [99.5, 100.5],
+        // but its own high (108.0) and low (92.0) reach well outside — a wick
+        // the window never measured, because WindowRange() read the ring
+        // before this bar was pushed into it.
+        Step(eng, t, 100.0, 108.0, 92.0, 100.0, 2.0);
+        T.Check(st.Box != null, "a wide-wick bar still seals — only its close is gated");
+        T.CheckClose(st.Box.High, 100.5, "the box's high is the WINDOW's, not the sealing bar's 108.0");
+        T.CheckClose(st.Box.Low, 99.5, "the box's low is the WINDOW's, not the sealing bar's 92.0");
     }
 
     private static void InvalidateOnBreakAndOnAge()

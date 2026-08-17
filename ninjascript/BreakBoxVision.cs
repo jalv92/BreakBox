@@ -416,21 +416,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         // edges never move after the seal (spec §6.1), so redrawing it every
         // bar would buy nothing and cost 780 draw objects a session.
         //
-        // Right edge = `SealedAt` = `Time[0]`, because PaintBox() runs inside
-        // the SAME OnBarUpdate that just called Seal() (Lifecycle -> Form ->
-        // Seal, all before this method). Left edge used to be `SealedAt` too —
-        // a zero-width hairline, since the two anchors were the same
-        // timestamp. Task 40's box has no AnchorStart, but the box's own
-        // High/Low ARE the range of the last BoxLookback CLOSED bars (the
-        // Lifecycle window, BreakBoxCore.cs's WindowRange/Form), so the box
-        // covers real time that already exists on this chart: walk back
-        // `_boxCfg.BoxLookback` bars from the sealing bar. Indexing `Time[]`
-        // (not `SealedAt` minus N seconds) means the left edge survives
-        // session gaps and weekends the way a literal time subtraction would
-        // not. `Math.Min` guards a box sealed with fewer than BoxLookback
-        // bars of chart history (should not happen in practice — the window
-        // can't fill without that many bars — but an IndexOutOfRange here
-        // would take the whole indicator down for a drawing bug).
+        // Right edge = `Time[1]`, NOT `Time[0]` / `SealedAt`. WindowRange()
+        // (BreakBoxCore.cs:565) reads the ring BEFORE Push(bar) runs, so the
+        // measured window is `Time[1] .. Time[BoxLookback]` — it deliberately
+        // EXCLUDES the sealing bar itself (the one-bar-lookahead guard pinned
+        // by tests/BoxTests.cs's FormationExcludesTheCurrentBar). Drawing to
+        // `Time[0]` put the sealing bar's own candle inside a box its high/low
+        // were never measured against: if that candle's wick pokes past
+        // `box.High`/`box.Low` (Form() only gates its CLOSE, not its wick —
+        // BreakBoxCore.cs:657), the operator sees a candle sticking outside
+        // the box that supposedly contains it. Left edge stays `Time[BoxLookback]`
+        // — the box's own High/Low ARE the range of the last BoxLookback CLOSED
+        // bars (the Lifecycle window), so walking back that many bars from the
+        // sealing bar covers exactly the bars the range was measured over, no
+        // more. Indexing `Time[]` (not `SealedAt` minus N seconds) means the
+        // left edge survives session gaps and weekends the way a literal time
+        // subtraction would not. `Math.Min` guards a box sealed with fewer than
+        // BoxLookback bars of chart history (should not happen in practice —
+        // the window can't fill without that many bars — but an
+        // IndexOutOfRange here would take the whole indicator down for a
+        // drawing bug); `Time[1]` needs no matching guard because OnBarUpdate's
+        // `CurrentBar < 1` return (line 276) already guarantees `CurrentBar >= 1`
+        // — i.e. at least two bars — everywhere PaintBox() runs.
         private void PaintBox()
         {
             BbBox box = _boxEngine.Box;
@@ -442,7 +449,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DateTime left = Time[barsBack];
 
             DrawTag(Draw.Rectangle(this, "bbv_box_" + box.Id, false,
-                                   left, box.Low, Time[0], box.High,
+                                   left, box.Low, Time[1], box.High,
                                    BoxBrush, BoxBrush, 6));
         }
 
