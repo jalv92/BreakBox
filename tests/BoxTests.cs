@@ -72,35 +72,43 @@ public static class BoxTests
     {
         T.Section("Box — cold start is hard-disabled and says so");
 
-        var cfg = Cfg();
-        // SEAL (T42) and INVALIDATE (T43) landed after this test was written:
-        // this exact tape now genuinely seals ~3 boxes by bar 60 (quiet run ->
-        // seal, break invalidates it, next quiet run seals the next one), which
-        // would graduate SealedCount past the shared Cfg()'s BoxMeanSamples=3
-        // mid-run and flip the gate before the loop even finishes — not a cold
-        // start anymore. Raised here, locally, so THIS test still tests what it
-        // says it tests: an undefined cold start with no sealed-box history at
-        // all, for the whole tape.
-        cfg.BoxMeanSamples = 1000;
+        var cfg = Cfg();                    // BoxMeanSamples = 3
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
 
-        // A tape that breaks a tight range every 20 bars. With no sealed-box
-        // history there is no denominator for the validity gate, so nothing may
-        // fire — an undefined cold start is the second way to reproduce v1's
-        // silence, and this is the assert that stops it coming back.
+        // A tape that breaks a tight range every 20 bars. Boxes seal all the way
+        // through — the lifecycle is never suppressed — but nothing may fire
+        // until the denominator exists.
         int fires = 0;
         DateTime t = Open;
-        for (int i = 0; i < 60; i++)
+        for (int i = 0; i < 20; i++)
         {
-            bool brk = (i % 20) == 19;
+            bool brk = (i % 10) == 9;
             if (Step(eng, t, 100.0, brk ? 108.5 : 100.5, 99.5, brk ? 108.0 : 100.0, 2.0).Fire)
                 fires++;
             t = t.AddSeconds(30);
         }
-
         T.CheckInt(fires, 0, "nothing fires before BoxMeanSamples boxes have sealed");
         T.Check(st.Gate.Block == "box warming", "the gate names the cold start (got '" + st.Gate.Block + "')");
+        T.Check(st.Gate.BlockDetail == st.SealedCount + "/3 boxes sealed",
+                "and counts it (got '" + st.Gate.BlockDetail + "')");
+        T.CheckInt(st.Gate.GateDepth, 1, "cold start sits at ladder depth 1");
+        T.Check(st.SealedCount > 0, "boxes still sealed while the engine was disabled");
+
+        // Seeded history clears it: day 1 is not a dead day.
+        var st2 = new BbEngineState();
+        var eng2 = new BbEngine(cfg, st2);
+        eng2.SeedSealedRange(1.0);
+        eng2.SeedSealedRange(1.0);
+        eng2.SeedSealedRange(1.0);
+
+        DateTime u = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            Step(eng2, u, 100.0, 100.5, 99.5, 100.0, 2.0);
+            u = u.AddSeconds(30);
+        }
+        T.Check(st2.Gate.Block != "box warming", "seeded history clears the cold start");
     }
 
     private static void SampleRingIsNotSelfSelected()

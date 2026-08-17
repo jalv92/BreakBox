@@ -260,6 +260,12 @@ namespace BreakBoxCore
             // suppressing them leaves a hole that re-enabling cannot fill.
             Lifecycle(bar, atr);
 
+            // COLD START. Until BoxMeanSamples boxes have sealed there is no
+            // denominator for the validity gate, so the engine is HARD-DISABLED
+            // and the panel says exactly that. v1 printed READY next to
+            // "(out of band)" and never connected the two; the user watched a
+            // dead strategy for an hour. The lifecycle above still runs, which
+            // is what makes this warmup finite.
             if (_st.SealedCount < _cfg.BoxMeanSamples)
             {
                 _st.Gate.Set("box warming",
@@ -267,7 +273,22 @@ namespace BreakBoxCore
                 return a;
             }
 
-            _st.Gate.Set("box", "no sealed box", 2);
+            BbBox box = _st.Box;
+            if (box == null)
+            {
+                _st.Gate.Set("box", "no sealed box", 2);
+                return a;
+            }
+
+            if (!box.Valid)
+            {
+                _st.Gate.Set("box valid",
+                             "range " + F(box.Range) + " vs mean " + F(SealedMean())
+                             + " (band " + F(_cfg.BoxValidLo) + "-" + F(_cfg.BoxValidHi) + "x)", 3);
+                return a;
+            }
+
+            _st.Gate.Set("break", "close inside " + F(box.High) + " / " + F(box.Low), 8);
             return a;
         }
 
