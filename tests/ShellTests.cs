@@ -16,6 +16,7 @@ public static class ShellTests
         SecondsToBars();
         BarSecondsEstimate();
         GateReport();
+        EntryWindowAndBudget();
     }
 
     // §4.2. One report per engine, never shared. Its whole job is that the panel
@@ -110,5 +111,33 @@ public static class ShellTests
         double[] fast = new double[250];
         for (int i = 0; i < fast.Length; i++) fast[i] = 0.2;
         T.CheckInt(BbScale.EstimateBarSeconds(fast, fast.Length), 1, "a sub-second series floors at 1s");
+    }
+
+    private static void EntryWindowAndBudget()
+    {
+        T.Section("Session — the entry window and the daily budget (B8, B9)");
+
+        var cfg = new BbConfig();
+        T.CheckInt(cfg.EntryWindowStartHhmm, 930, "the window opens at the cash open");
+        T.CheckInt(cfg.EntryWindowEndHhmm, 1545, "and shuts 15 minutes before the cash close");
+
+        int lo = BbMath.HhmmToSecs(cfg.EntryWindowStartHhmm);
+        int hi = BbMath.HhmmToSecs(cfg.EntryWindowEndHhmm);
+        T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(929) + 59, lo, hi), "09:29:59 is out");
+        T.Check(BbMath.InWindow(BbMath.HhmmToSecs(930), lo, hi), "09:30:00 is in");
+        T.Check(BbMath.InWindow(BbMath.HhmmToSecs(1544) + 59, lo, hi), "15:44:59 is in");
+        T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(1545), lo, hi), "15:45:00 is out");
+
+        // The old default was 18:00 -> 16:00: a 22-hour window that gates
+        // nothing. A no-op gate is worse than no gate at all, because it reads
+        // like a decision somebody made.
+        T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(300), lo, hi), "03:00 overnight is out");
+
+        // B9. The budget is a governor of LAST resort. 5 a day is a swing
+        // number, and the design frequency is 8-12 fills per session (§13 step
+        // 4) — the old cap would have silenced the strategy before lunch and
+        // called it risk management. DailyLossLimit governs HOW MUCH; this only
+        // stops a runaway loop.
+        T.CheckInt(cfg.MaxTradesPerDay, 30, "the daily cap sits above the design frequency");
     }
 }

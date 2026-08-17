@@ -230,12 +230,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrailAtrMult = 1.5;
 
                 // ---- Session and governor
-                EntryWindowStartHhmm = 1800;
-                EntryWindowEndHhmm = 1600;
+                EntryWindowStartHhmm = 930;
+                EntryWindowEndHhmm = 1545;
                 FlattenHhmm = 1655;
                 MaxTradesPerBox = 1;
-                MaxTradesPerDay = 5;
-                DailyLossLimit = 0;             // 0 = off, currency
+                MaxTradesPerDay = 30;
+                // ON. §7.1 makes this load-bearing: with TP1 at 0.50R taking
+                // half off and breakeven armed, a runner can still round-trip
+                // from +1R to a full -1R, and after TP1 the open loss is
+                // unbounded until the stop. This is what catches the day where
+                // that happens three times.
+                DailyLossLimit = 450;           // currency
                 DailyProfitTarget = 0;          // 0 = off, currency
                 AtrPeriod = 14;
 

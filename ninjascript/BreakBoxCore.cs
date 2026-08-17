@@ -129,9 +129,16 @@ namespace BreakBoxCore
 
         // --- Gating
         public int MaxTradesPerBox = 1;
-        public int MaxTradesPerDay = 5;
-        public int EntryWindowStartHhmm = 1800;   // 18:00 -> 17:00 = the whole ETH session
-        public int EntryWindowEndHhmm = 1700;
+        // A governor of last resort, not a plan. The design frequency is 8-12
+        // fills per session (§13 step 4); the daily budget only has to stop a
+        // runaway loop. DailyLossLimit in the shell is the real governor,
+        // because it measures HOW MUCH, not HOW MANY.
+        public int MaxTradesPerDay = 30;
+        // RTH only, and off the tape 15 minutes before the cash close. The
+        // 18:00 -> 17:00 default it replaces was the whole ETH session: a
+        // 22-hour window gates nothing while looking like it does.
+        public int EntryWindowStartHhmm = 930;
+        public int EntryWindowEndHhmm = 1545;
         public int AtrPeriod = 14;
     }
 
