@@ -20,6 +20,7 @@ public static class BoxTests
         ColdStartIsHardDisabled();
         SampleRingIsNotSelfSelected();
         FormationExcludesTheCurrentBar();
+        SealFreezesTheEdges();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -148,5 +149,43 @@ public static class BoxTests
         // On the NEXT bar it does enter the window, and the candidate dies.
         Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
         T.Check(!st.CandOpen, "one bar later the wide bar is in the window and formation fails");
+    }
+
+    private static void SealFreezesTheEdges()
+    {
+        T.Section("Box — SEAL after BoxMinBars, edges frozen, Id monotone");
+
+        var cfg = Cfg();                    // BoxLookback 4, BoxMinBars 2
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+
+        // Bars 1-4 fill the window. Bar 5 is the first candidate, bar 6 the
+        // second consecutive one — that is the seal.
+        DateTime t = Open;
+        for (int i = 0; i < 5; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box == null, "one passing bar is not a box");
+
+        Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(st.Box != null, "BoxMinBars consecutive passing bars seal it");
+        T.CheckInt(st.Box.Id, 1, "ids are monotone from 1");
+        T.CheckClose(st.Box.High, 100.5, "sealed high");
+        T.CheckClose(st.Box.Low, 99.5, "sealed low");
+        T.CheckInt(st.SealedCount, 1, "the seal counts toward the cold start");
+
+        // Nothing moves a sealed box's edges, and a live box is not replaced:
+        // an accumulation that gets a new identity every quiet bar has no
+        // identity, and §6.2 counts arms PER BOX ID.
+        for (int i = 0; i < 10; i++)
+        {
+            Step(eng, t, 100.0, 100.9, 99.6, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.CheckInt(st.Box.Id, 1, "a live box is not replaced");
+        T.CheckClose(st.Box.High, 100.5, "and its edges did not move");
     }
 }

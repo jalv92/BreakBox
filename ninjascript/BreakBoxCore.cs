@@ -409,6 +409,48 @@ namespace BreakBoxCore
 
             _st.CandHigh = hi;
             _st.CandLow = lo;
+
+            if (_st.CandBars < _cfg.BoxMinBars)
+                return;
+
+            // A live box is never replaced. It dies first (INVALIDATE) — an
+            // object whose identity changes every quiet bar cannot carry a
+            // per-Id arm budget, which is the whole of §6.2.
+            if (_st.Box != null)
+                return;
+
+            // Refuse to seal a box the current bar has already left. The window
+            // excludes this bar by design, so without this guard the bar that
+            // breaks a box seals an identical one on the spot and the engine
+            // churns Ids while price runs away.
+            if (bar.Close > hi || bar.Close < lo)
+                return;
+
+            Seal(hi - lo, bar.Time);
+        }
+
+        private void Seal(double range, DateTime t)
+        {
+            _st.Box = new BbBox
+            {
+                High = _st.CandHigh,
+                Low = _st.CandLow,
+                SealedAt = t,
+                Valid = false,              // the validity gate fills this in (Task 44)
+                Id = _st.NextBoxId++
+            };
+            _st.BoxAge = 0;
+            _st.ArmsUp = 0;
+            _st.ArmsDn = 0;
+            _st.TradesThisBox = 0;
+            _st.CandOpen = false;
+            _st.CandBars = 0;
+
+            _st.SealedRanges[_st.SealedIdx] = range;
+            _st.SealedIdx = (_st.SealedIdx + 1) % _st.SealedRanges.Length;
+            if (_st.SealedFilled < _st.SealedRanges.Length)
+                _st.SealedFilled++;
+            _st.SealedCount++;
         }
 
         #endregion
