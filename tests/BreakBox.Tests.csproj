@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../ninjascript/BreakBoxTypes.cs" Condition="Exists('../ninjascript/BreakBoxTypes.cs')" />
+    <Compile Include="../ninjascript/BreakBoxCloud.cs" Condition="Exists('../ninjascript/BreakBoxCloud.cs')" />
     <Compile Include="../ninjascript/BreakBoxCore.cs" Condition="Exists('../ninjascript/BreakBoxCore.cs')" />
     <Compile Include="../ninjascript/BreakBoxExits.cs" Condition="Exists('../ninjascript/BreakBoxExits.cs')" />
   </ItemGroup>

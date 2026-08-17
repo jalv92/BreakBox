@@ -25,7 +25,7 @@ SRC="$ROOT/ninjascript"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-FILES=(BreakBoxTypes BreakBoxCore BreakBoxExits BreakBoxStrategy BreakBoxPanel)
+FILES=(BreakBoxTypes BreakBoxCloud BreakBoxCore BreakBoxExits BreakBoxStrategy BreakBoxPanel)
 COMBINED="$TMP/BreakBoxCombined.cs"
 
 # Usings first, de-duplicated, then every file with its own usings stripped.

@@ -48,6 +48,7 @@ public static class Program
         BracketTests.Run();
         ShellTests.Run();
         VisionTests.Run();
+        CloudTests.Run();
         // Phase 4 inserts HistoryTests.Run() after this line. Insert, never replace.
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
