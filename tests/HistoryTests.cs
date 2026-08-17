@@ -18,6 +18,8 @@ public static class HistoryTests
         WriteGuard();
         GateLadder();
         LogRing();
+        ChartMath();
+        Cap();
     }
 
     private static BbTradeRecord Rec()
@@ -195,5 +197,72 @@ public static class HistoryTests
         // Newest(1) staying put is the proof the duplicate never wrote.
         r.Push("12:56", "filled");
         T.Check(r.Newest(1).StartsWith("12:52", StringComparison.Ordinal), "a repeat is not pushed twice");
+    }
+
+    private static void ChartMath()
+    {
+        T.Section("Panel — history chart math");
+
+        List<BbTradeRecord> rows = new List<BbTradeRecord>();
+        for (int i = 0; i < 120; i++)
+        {
+            BbTradeRecord r = Rec();
+            r.Ts = new DateTime(2026, 8, 1).AddDays(i / 6).AddHours(9 + i % 6);
+            r.Pnl = 10.0;
+            rows.Add(r);
+        }
+
+        T.CheckInt(BbHistory.View(rows, "100t").Count, 100, "100t takes the last hundred trades");
+        // Windowed off the NEWEST RECORD, never DateTime.Now: a Replay file's
+        // last trade is months old, and "today" against the wall clock would
+        // render an empty chart with no explanation anywhere on the panel.
+        T.CheckInt(BbHistory.View(rows, "today").Count, 6, "today = the newest record's own day");
+        T.Check(BbHistory.View(rows, "20d").Count > 6, "20d is wider than today");
+        T.CheckInt(BbHistory.View(new List<BbTradeRecord>(), "20d").Count, 0, "an empty file yields no view");
+        T.CheckInt(BbHistory.View(null, "20d").Count, 0, "a null list does not throw");
+
+        double zeroY;
+        T.CheckInt(BbHistory.SparkPoints(new double[0], 100, 50, out zeroY).Length, 0, "no points from no trades");
+
+        // A flat curve is the divide-by-zero: span 0. It draws down the middle.
+        double[] flat = BbHistory.SparkPoints(new double[] { 0.0, 0.0, 0.0 }, 100, 50, out zeroY);
+        T.CheckClose(zeroY, 25.0, "a flat curve puts the zero line mid-box");
+        T.CheckClose(flat[1], 25.0, "and the curve on it");
+        T.CheckClose(flat[4], 100.0, "the last point is at the right edge");
+
+        // An all-negative curve: zero is still IN frame, pinned to the top.
+        // Off-canvas would leave the reader with no reference at all.
+        double[] down = BbHistory.SparkPoints(new double[] { -10.0, -20.0 }, 100, 50, out zeroY);
+        T.CheckClose(zeroY, 0.0, "an underwater curve keeps zero at the top edge");
+        T.CheckClose(down[3], 50.0, "the worst point sits on the floor");
+
+        // y is inverted: WPF's origin is top-left, so a PROFIT must have a
+        // SMALLER y. Getting this wrong renders every winning run as a slide.
+        double[] up = BbHistory.SparkPoints(new double[] { 0.0, 100.0 }, 100, 50, out zeroY);
+        T.Check(up[3] < up[1], "profit goes UP the screen");
+    }
+
+    private static void Cap()
+    {
+        T.Section("Panel — in-memory history cap (§68 amendment)");
+
+        List<BbTradeRecord> rows = new List<BbTradeRecord>();
+        for (int i = 0; i < 5; i++)
+        {
+            BbTradeRecord r = Rec();
+            r.Pnl = i;
+            rows.Add(r);
+        }
+        BbHistory.TrimFront(rows, 3);
+        T.CheckInt(rows.Count, 3, "trimmed down to the cap");
+        T.CheckClose(rows[0].Pnl, 2.0, "the two OLDEST were dropped, not the newest");
+        T.CheckClose(rows[2].Pnl, 4.0, "the newest survives");
+
+        List<BbTradeRecord> under = new List<BbTradeRecord> { Rec() };
+        BbHistory.TrimFront(under, 3);
+        T.CheckInt(under.Count, 1, "under the cap is a no-op");
+
+        BbHistory.TrimFront(null, 3);
+        T.Check(true, "a null list does not throw");
     }
 }

@@ -121,6 +121,97 @@ namespace BreakBoxCore
             return cum;
         }
 
+        // The panel's three views. `today` and `20d` are windows measured from
+        // the NEWEST RECORD, not from DateTime.Now: a Replay file's last trade
+        // is months old, and a wall-clock "today" would render an empty chart
+        // with nothing on the panel to explain it.
+        public static List<BbTradeRecord> View(IReadOnlyList<BbTradeRecord> rows, string view)
+        {
+            List<BbTradeRecord> outp = new List<BbTradeRecord>();
+            if (rows == null || rows.Count == 0)
+                return outp;
+
+            if (view == "100t")
+            {
+                int from = rows.Count > 100 ? rows.Count - 100 : 0;
+                for (int i = from; i < rows.Count; i++)
+                    outp.Add(rows[i]);
+                return outp;
+            }
+
+            int days = view == "today" ? 1 : 20;
+            DateTime cut = rows[rows.Count - 1].Ts.Date.AddDays(1 - days);
+            for (int i = 0; i < rows.Count; i++)
+                if (rows[i].Ts.Date >= cut)
+                    outp.Add(rows[i]);
+            return outp;
+        }
+
+        // Maps a cumulative-equity curve onto panel pixels: x,y pairs plus the y
+        // of the zero baseline. y is INVERTED because WPF's origin is top-left —
+        // a profit has to have a smaller y or every winning run renders as a
+        // slide.
+        //
+        // Zero is always in frame: it is the reference the whole chart is read
+        // against, so an all-negative curve pins it to the top edge rather than
+        // scrolling it off the canvas.
+        public static double[] SparkPoints(double[] cum, double w, double h, out double zeroY)
+        {
+            zeroY = h * 0.5;
+            if (cum == null || cum.Length == 0 || w <= 0.0 || h <= 0.0)
+                return new double[0];
+
+            double lo = 0.0, hi = 0.0;
+            for (int i = 0; i < cum.Length; i++)
+            {
+                if (cum[i] < lo) lo = cum[i];
+                if (cum[i] > hi) hi = cum[i];
+            }
+
+            double dx = cum.Length == 1 ? 0.0 : w / (cum.Length - 1);
+            double[] pts = new double[cum.Length * 2];
+            double span = hi - lo;
+
+            // The degenerate case that makes this function worth testing: a
+            // curve that never moves divides by zero. It draws down the middle.
+            if (span <= 0.0)
+            {
+                for (int i = 0; i < cum.Length; i++)
+                {
+                    pts[i * 2] = i * dx;
+                    pts[i * 2 + 1] = zeroY;
+                }
+                return pts;
+            }
+
+            zeroY = h * hi / span;
+            for (int i = 0; i < cum.Length; i++)
+            {
+                pts[i * 2] = i * dx;
+                pts[i * 2 + 1] = h * (hi - cum[i]) / span;
+            }
+            return pts;
+        }
+
+        // §68 amendment. How many trades the panel ever needs to hold in RAM:
+        // the widest view is 20d, and at the default MaxTradesPerDay of 30 that
+        // is ~600 trades. Kept generous rather than tight — a cap that silently
+        // shortens a legitimate 20d view is a worse bug than the memory it
+        // would save one long optimisation run.
+        public const int MaxInMemory = 2000;
+
+        // Drops from the FRONT (oldest) so the newest trades always survive.
+        // Never touches the file — the caller (the shell) decides that
+        // separately; this only bounds what a long run keeps in RAM.
+        public static void TrimFront(List<BbTradeRecord> list, int cap)
+        {
+            if (list == null || cap < 0)
+                return;
+            int excess = list.Count - cap;
+            if (excess > 0)
+                list.RemoveRange(0, excess);
+        }
+
         // Keys that scale SIZE rather than change the DECISION. The shell hands
         // in everything it has, including risk, and the drop happens here — in
         // the file the assert suite can see — rather than at the impure call

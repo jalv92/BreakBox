@@ -175,6 +175,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly List<BbTradeRecord> _history = new List<BbTradeRecord>();
         private string _histPath = "";
         private string _cfgHash = "";
+        // §68 amendment. Sticky once true: a drop can never be undone, so the
+        // panel needs to know "some history is missing from RAM" even on a bar
+        // where the list has since dropped back under the cap again.
+        private bool _historyCapped;
 
         // Panel-driven overrides. The panel writes them, OnBarUpdate reads them.
         // They start as the parameter values and diverge only when a human
@@ -461,6 +465,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "tp3r=" + Tp3R.ToString("0.###", CultureInfo.InvariantCulture),
                 "tp1pct=" + Tp1Pct.ToString(CultureInfo.InvariantCulture),
                 "be=" + (BreakevenOnTp1 ? "1" : "0"),
+                // §68 amendment: these five change WHAT is traded, the same
+                // test the risk multiplier fails (which is why THAT one stays
+                // excluded). Left out, a restart with a different
+                // SwingStrength — or any of the other four — would NOT get a
+                // new bucket, and genuinely different configurations would
+                // merge onto one equity curve: the exact contamination the
+                // digest exists to expose (§10).
+                "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
+                "swing=" + SwingStrength.ToString(CultureInfo.InvariantCulture),
+                "ribf=" + RibbonFastSec.ToString(CultureInfo.InvariantCulture),
+                "ribs=" + RibbonSlowSec.ToString(CultureInfo.InvariantCulture),
+                "ews=" + EntryWindowStartHhmm.ToString(CultureInfo.InvariantCulture),
+                "ewe=" + EntryWindowEndHhmm.ToString(CultureInfo.InvariantCulture),
+                "minbb=" + MinBarsBetweenSec.ToString(CultureInfo.InvariantCulture),
                 "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
             }));
         }
@@ -1156,6 +1174,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (BbHistory.TryParse(lines[i], out r))
                         _history.Add(r);
                 }
+                // §68 amendment: a file from a long-running instance can hold
+                // more than the panel ever needs in RAM. Cap AFTER loading, not
+                // by skipping early lines on the way in — dropping from the
+                // front here is one call, and it keeps the load loop simple.
+                if (_history.Count > BbHistory.MaxInMemory)
+                {
+                    BbHistory.TrimFront(_history, BbHistory.MaxInMemory);
+                    _historyCapped = true;
+                }
                 Print("BreakBox: history loaded, " + _history.Count + " trades from " + _histPath);
             }
             catch (Exception ex)
@@ -1169,6 +1196,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void AppendHistory(BbTradeRecord r)
         {
             _history.Add(r);
+            // §68 amendment: cap AFTER the file-write decision below, which
+            // reads `r` — the record just appended — not `_history`. Trimming
+            // the in-memory render cache must never change what gets written
+            // to disk; the file is the durable record.
+            if (_history.Count > BbHistory.MaxInMemory)
+            {
+                BbHistory.TrimFront(_history, BbHistory.MaxInMemory);
+                _historyCapped = true;
+            }
 
             if (!BbHistory.ShouldWrite(State == State.Realtime,
                                        Bars != null && Bars.IsTickReplay,

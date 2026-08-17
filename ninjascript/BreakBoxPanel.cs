@@ -25,10 +25,20 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 using BreakBoxCore;                           // per-file nt8c check reports CS0246 here: FALSE POSITIVE
+// Aliased, and this is not style. check.sh hoists every file's usings into ONE
+// compilation unit, which drags BreakBoxStrategy.cs's
+// `using NinjaTrader.NinjaScript.DrawingTools` into scope here — and that
+// namespace declares its own Line, Polygon and Polyline. Unaliased, the
+// combined build (and only the combined build) fails CS0104 ambiguous
+// reference, which is a spectacularly confusing way to lose an afternoon.
+using WLine = System.Windows.Shapes.Line;
+using WPolyline = System.Windows.Shapes.Polyline;
+using WPolygon = System.Windows.Shapes.Polygon;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -109,6 +119,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         private static readonly string[] SlNames = { "Cndl", "Swng", "MA", "E50", "Man" };
         private TextBlock _sessionA, _sessionB;
 
+        // HISTORY chart (Task 68). Chart geometry, in DIP. 300 wide minus 2x10
+        // body margin minus 16 of slack for the scrollbar.
+        private const double ChartW = 254;
+        private const double ChartH = 64;
+
+        private string _histView = "20d";
+        private readonly Button[] _viewBtns = new Button[3];
+        private static readonly string[] ViewNames = { "today", "20d", "100t" };
+        private TextBlock _equityText, _statsText;
+        private Canvas _chart;
+        private WPolyline _equityLine;
+        private WPolygon _equityFill;
+        private WLine _zeroLine;
+        private ColumnDefinition _wCol, _beCol, _lCol;
+        private readonly TextBlock[] _tradeText = new TextBlock[3];
+        private readonly Border[] _tradeBar = new Border[3];
+
         #endregion
 
         #region Construction
@@ -156,6 +183,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _body.Children.Add(BuildLogSection());
                 _body.Children.Add(BuildControlsSection());
                 _body.Children.Add(BuildSessionSection());
+                _body.Children.Add(BuildHistorySection());
 
                 ScrollViewer scroll = new ScrollViewer
                 {
@@ -494,6 +522,96 @@ namespace NinjaTrader.NinjaScript.Strategies
             s.Children.Add(_sessionA);
             s.Children.Add(_sessionB);
             s.Children.Add(Rule());
+            return s;
+        }
+
+        private UIElement BuildHistorySection()
+        {
+            StackPanel s = new StackPanel();
+
+            UIElement[] views = new UIElement[ViewNames.Length];
+            for (int i = 0; i < ViewNames.Length; i++)
+            {
+                int idx = i;
+                _viewBtns[i] = Toggle(ViewNames[i], ViewNames[i] == _histView, delegate
+                {
+                    _histView = ViewNames[idx];
+                    for (int k = 0; k < _viewBtns.Length; k++)
+                        Paint(_viewBtns[k], k == idx);
+                    // No Rebuild(): the view is a lens on data already in
+                    // memory. It must not touch the trading config.
+                });
+                views[i] = _viewBtns[i];
+            }
+            s.Children.Add(Row2(Section("HISTORY"), Cols(views)));
+
+            // The dominant number. 22px because it is the one thing on this
+            // panel a human reads from across the room.
+            _equityText = new TextBlock
+            {
+                Text = "--",
+                Foreground = TextBrush,
+                FontSize = 22,
+                Margin = new Thickness(0, 2, 0, 2)
+            };
+            s.Children.Add(_equityText);
+
+            _chart = new Canvas { Height = ChartH, Width = ChartW, Margin = new Thickness(0, 2, 0, 6) };
+            _zeroLine = new WLine
+            {
+                X1 = 0,
+                X2 = ChartW,
+                Stroke = DimBrush,
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection(new double[] { 2, 3 })
+            };
+            _equityFill = new WPolygon { Fill = new SolidColorBrush(Color.FromArgb(0x28, 0x00, 0xC8, 0xFF)) };
+            _equityLine = new WPolyline { Stroke = OnBrush, StrokeThickness = 1.5 };
+            // Baseline under the fill under the line: the line is the data and
+            // must never be the thing that gets covered.
+            _chart.Children.Add(_zeroLine);
+            _chart.Children.Add(_equityFill);
+            _chart.Children.Add(_equityLine);
+            s.Children.Add(_chart);
+
+            _statsText = Small("--");
+            s.Children.Add(_statsText);
+
+            // Stacked W / BE / L. The widths are star weights set at update
+            // time, so WPF does the arithmetic and a zero-count segment simply
+            // collapses instead of rendering a 1px sliver.
+            Grid bar = new Grid { Height = 6, Margin = new Thickness(0, 3, 0, 6) };
+            _wCol = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+            _beCol = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+            _lCol = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+            bar.ColumnDefinitions.Add(_wCol);
+            bar.ColumnDefinitions.Add(_beCol);
+            bar.ColumnDefinitions.Add(_lCol);
+            Border wSeg = new Border { Background = OkBrush };
+            Border beSeg = new Border { Background = DimBrush };
+            Border lSeg = new Border { Background = LossBrush };
+            Grid.SetColumn(wSeg, 0); Grid.SetColumn(beSeg, 1); Grid.SetColumn(lSeg, 2);
+            bar.Children.Add(wSeg); bar.Children.Add(beSeg); bar.Children.Add(lSeg);
+            s.Children.Add(bar);
+
+            // The last three trades. The row BACKGROUND is the magnitude bar —
+            // a separate bar column would cost 60 of the 300 DIP and say the
+            // same thing.
+            for (int i = 0; i < 3; i++)
+            {
+                Grid g = new Grid { Height = 16, Margin = new Thickness(0, 1, 0, 1) };
+                _tradeBar[i] = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromArgb(0x30, 0x4C, 0xC3, 0x8C)),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Width = 0
+                };
+                _tradeText[i] = Small("");
+                g.Children.Add(_tradeBar[i]);
+                g.Children.Add(_tradeText[i]);
+                s.Children.Add(g);
+            }
+
             return s;
         }
 
