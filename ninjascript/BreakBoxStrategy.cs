@@ -151,6 +151,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double _dayPnl;
         private readonly List<double> _tradePnls = new List<double>();
 
+        // §13 step 1 — count-only instrumentation. The first thing the
+        // calibration protocol does is run with orders disabled and count how
+        // often each gate blocks; without these counters there is nothing to
+        // count and the alternative is guessing constants off P&L, fitting
+        // noise twice. A histogram over GateDepth per engine, plus the RAW
+        // arm/fill counts the ladder itself cannot show (a budget of one arm
+        // per edge reports one arm whatever the tape did — the raw count is
+        // what says whether the gates are starved or the budget is binding).
+        // Reset at the session roll so a line describes ONE session. None of
+        // this may depend on a fill, a position or the order layer.
+        private int[] _cloudGateCounts = new int[BbCloud.GateLadder.Length];
+        private int[] _boxGateCounts = new int[BbEngine.GateLadder.Length];
+        private int _cloudArmedToday, _cloudFilledToday;
+        private int _boxArmedToday, _boxFilledToday;
+        private int _barsToday;
+        private bool _gateSummaryPrinted;
+
         // History (§10). The list is the panel's data source and holds EVERY
         // trade of this run, written or not: in a backtest you still want to
         // see the curve the run produced — you just must not let it touch the
@@ -531,6 +548,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             DateTime sessionDate = SessionDateOf(Time[0], secs);
 
             RollSession(sessionDate);
+            _barsToday++;
+
+            // §13 step 1. Printed once per session at FlattenHhmm, independent
+            // of TimeToFlatten/_inTrade below: that check returns false with no
+            // position open, and the whole point of this line is running with
+            // NO submissions at all — gating it on a position would print
+            // nothing in exactly the mode it exists for.
+            if (!_gateSummaryPrinted && secs >= BbMath.HhmmToSecs(FlattenHhmm))
+            {
+                PrintGateSummary();
+                _gateSummaryPrinted = true;
+            }
 
             // Manage the open trade FIRST. A bracket that needs to tighten must
             // not wait behind a signal evaluation that cannot fire anyway.
@@ -589,10 +618,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             BbAction a = default(BbAction);
             if (_uiCloudOn)
+            {
                 a = _cloud.OnBar(bar, secs, _emaFast.Value, _emaSlow.Value, _emaTrend.Value,
                                  _atr.Value, cloudWarm, canTrade && windowOpen, positioned);
+                // §13 step 1. Read straight off the engine's own return/state —
+                // never off a fill or a position — so this counts correctly
+                // even with submissions disabled.
+                CountGate(_cloudGateCounts, _cloudState.Gate.GateDepth);
+                if (a.Fire) _cloudArmedToday++;
+            }
             if (!a.Fire)
+            {
                 a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade, positioned);
+                CountGate(_boxGateCounts, _engState.Gate.GateDepth);
+                if (a.Fire) _boxArmedToday++;
+            }
 
             if (ShowBox) DrawBox();
 
@@ -642,6 +682,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             _lossesToday = 0;
             _dayPnl = 0.0;
             _tradePnls.Clear();
+
+            // §13 step 1 instrumentation resets alongside the daily counters
+            // above, so a printed line describes ONE session.
+            Array.Clear(_cloudGateCounts, 0, _cloudGateCounts.Length);
+            Array.Clear(_boxGateCounts, 0, _boxGateCounts.Length);
+            _cloudArmedToday = 0; _cloudFilledToday = 0;
+            _boxArmedToday = 0; _boxFilledToday = 0;
+            _barsToday = 0;
+            _gateSummaryPrinted = false;
             // The lockout is a DAILY limit, so a new session clears it. A
             // hand-pulled Lock Out is not: the panel sets a separate latch that
             // only the panel clears.
@@ -660,6 +709,34 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Only fires on the bar that CROSSES the boundary, which on a 1m
             // series is the minute the flatten time falls in.
             return secs >= flat && secs < flat + 60;
+        }
+
+        // §13 step 1 — the histogram increment. A depth of -1 (the engine
+        // fired, nothing blocked) is not a bucket and is skipped on purpose:
+        // the sum of this array is "bars blocked", not "bars evaluated".
+        private static void CountGate(int[] counts, int depth)
+        {
+            if (depth >= 0 && depth < counts.Length)
+                counts[depth]++;
+        }
+
+        private void PrintGateSummary()
+        {
+            PrintGateLine("CLOUD", BbCloud.GateLadder, _cloudGateCounts, _cloudArmedToday, _cloudFilledToday);
+            PrintGateLine("BOX  ", BbEngine.GateLadder, _boxGateCounts, _boxArmedToday, _boxFilledToday);
+        }
+
+        // Names every rung straight off the engine's own GateLadder so the
+        // printed label can never drift from the depth it names (§9.3's rule
+        // for the panel applies here too).
+        private void PrintGateLine(string label, string[] ladder, int[] counts, int armed, int filled)
+        {
+            string line = label + " " + _sessionDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                         + "  bars=" + _barsToday;
+            for (int i = 0; i < ladder.Length; i++)
+                line += "  " + ladder[i].Replace(' ', '-') + "=" + counts[i];
+            line += "  |  armed=" + armed + " filled=" + filled;
+            Print(line);
         }
 
         #endregion
@@ -957,8 +1034,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // engine would spend the WRONG engine's memory on a cloud fill —
                 // the box would count a trade it never took, and the cloud's
                 // token/cooldown would never reset.
-                if (_owningEngine == BbEntryEngine.Cloud) _cloud.OnEntryFilled();
-                else _engine.OnEntryFilled();
+                if (_owningEngine == BbEntryEngine.Cloud) { _cloud.OnEntryFilled(); _cloudFilledToday++; }
+                else { _engine.OnEntryFilled(); _boxFilledToday++; }
                 _tradesToday++;
                 OpenBracket(price, execution.Order.Filled);
                 return;
