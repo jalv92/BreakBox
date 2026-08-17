@@ -93,6 +93,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly TextBlock[] _gateName = new TextBlock[GateRows];
         private readonly TextBlock[] _gateVal = new TextBlock[GateRows];
 
+        private static readonly int LogRows = 3;
+        private readonly BbLogRing _log = new BbLogRing(3);
+        private readonly TextBlock[] _logText = new TextBlock[3];
+
         #endregion
 
         #region Construction
@@ -137,6 +141,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 _body = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
                 _body.Children.Add(BuildGateSection());
+                _body.Children.Add(BuildLogSection());
 
                 ScrollViewer scroll = new ScrollViewer
                 {
@@ -378,6 +383,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             return s;
         }
 
+        private UIElement BuildLogSection()
+        {
+            StackPanel s = new StackPanel();
+            s.Children.Add(Section("ENGINE LOG"));
+            for (int i = 0; i < LogRows; i++)
+            {
+                _logText[i] = Small("");
+                _logText[i].TextTrimming = TextTrimming.CharacterEllipsis;
+                s.Children.Add(_logText[i]);
+            }
+            s.Children.Add(Rule());
+            return s;
+        }
+
         #endregion
 
         #region Panel actions (strategy thread)
@@ -464,6 +483,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             else EnterShort(0, qty, sig);
         }
 
+        // Called from OnBarUpdate and the order handlers, never from WPF. The
+        // ring is plain fields with no lock because there is exactly one writer
+        // thread and the reader only ever runs inside the batched dispatcher
+        // callback, which reads a COPY taken on this thread.
+        private void EngineLog(string text)
+        {
+            _log.Push(Time[0].ToString("HH:mm", CultureInfo.InvariantCulture), text);
+        }
+
         #endregion
 
         #region Readouts
@@ -473,8 +501,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         // etc. are gone with v1's HUD row) and Task 69 ("one batched dispatcher
         // update per bar") is the task that rebuilds this into FillStatus /
         // FillGates / FillHistory / ApplySnap over a single PanelSnap. Until
-        // then this only drives what Task 64 actually built: the status text
-        // and the header dot, so the dot is not a dead decoration.
+        // then this only drives what Tasks 64-66 actually built: the status
+        // text and the header dot, so the dot is not a dead decoration.
         private void UpdatePanelStatus()
         {
             if (_panelRoot == null || ChartControl == null)

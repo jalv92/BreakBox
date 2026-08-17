@@ -239,4 +239,50 @@ namespace BreakBoxCore
             return sb.ToString();
         }
     }
+
+    // The engine log (§9.4). Lives in the pure file for one reason: newest-first
+    // ordering across a wrap is the kind of off-by-one you cannot see on a chart
+    // — three plausible lines in the wrong order look exactly like three lines
+    // in the right order.
+    public sealed class BbLogRing
+    {
+        private readonly string[] _buf;
+        private int _next;
+        private int _count;
+        private string _lastText = "";
+
+        public BbLogRing(int size)
+        {
+            _buf = new string[size < 1 ? 1 : size];
+        }
+
+        public int Count { get { return _count; } }
+
+        public void Push(string ts, string text)
+        {
+            if (text == null)
+                text = "";
+            // Every transition into a new Block pushes. Without this, a block
+            // that persists for forty bars evicts the two entries that
+            // explained how it got there.
+            if (text == _lastText)
+                return;
+            _lastText = text;
+            _buf[_next] = (ts == null ? "" : ts) + "  " + text;
+            _next = (_next + 1) % _buf.Length;
+            if (_count < _buf.Length)
+                _count++;
+        }
+
+        // 0 = the most recent entry.
+        public string Newest(int i)
+        {
+            if (i < 0 || i >= _count)
+                return "";
+            int idx = _next - 1 - i;
+            while (idx < 0)
+                idx += _buf.Length;
+            return _buf[idx] == null ? "" : _buf[idx];
+        }
+    }
 }

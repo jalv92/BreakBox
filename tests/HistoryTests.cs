@@ -17,6 +17,7 @@ public static class HistoryTests
         EquityAndHash();
         WriteGuard();
         GateLadder();
+        LogRing();
     }
 
     private static BbTradeRecord Rec()
@@ -160,5 +161,39 @@ public static class HistoryTests
         // Warmup blocks at the first gate, which must not read as "all dimmed".
         T.CheckInt(BbGateReport.RowState(0, 0), 1, "a warmup block is the blocker, not a dimmed row");
         T.CheckInt(BbGateReport.RowState(1, 0), 2, "and everything below it is dimmed");
+    }
+
+    private static void LogRing()
+    {
+        T.Section("Panel — engine log ring");
+
+        BbLogRing r = new BbLogRing(3);
+        T.CheckInt(r.Count, 0, "empty");
+        T.Check(r.Newest(0) == "", "reading an empty ring yields a blank, not an exception");
+
+        r.Push("12:41", "armed cloud_long @ 29867.50");
+        T.CheckInt(r.Count, 1, "one entry");
+        T.Check(r.Newest(0) == "12:41  armed cloud_long @ 29867.50", "HH:mm two spaces text");
+
+        r.Push("12:46", "suppressed: box (cloud armed)");
+        r.Push("12:52", "token killed - closed through E50");
+        // NEWEST FIRST. The ladder says why now; the log says what happened
+        // while you were away, and the thing you were away for is the last one.
+        T.Check(r.Newest(0).StartsWith("12:52", StringComparison.Ordinal), "newest first");
+        T.Check(r.Newest(2).StartsWith("12:41", StringComparison.Ordinal), "oldest last");
+
+        r.Push("12:55", "filled");
+        T.CheckInt(r.Count, 3, "the ring does not grow");
+        T.Check(r.Newest(0).StartsWith("12:55", StringComparison.Ordinal), "the new entry is newest");
+        T.Check(r.Newest(2).StartsWith("12:46", StringComparison.Ordinal), "the oldest fell off");
+        T.Check(r.Newest(3) == "", "reading past the end is blank");
+
+        // A repeated block transition would otherwise push the same line three
+        // times and evict the two entries that explained it. If this push were
+        // NOT suppressed it would land in the slot Newest(1) currently reads
+        // ("12:52"), evicting "12:46" and promoting the old Newest(0) — so
+        // Newest(1) staying put is the proof the duplicate never wrote.
+        r.Push("12:56", "filled");
+        T.Check(r.Newest(1).StartsWith("12:52", StringComparison.Ordinal), "a repeat is not pushed twice");
     }
 }
