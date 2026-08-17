@@ -1,0 +1,215 @@
+// BreakBoxTypes.cs — the primitives every pure engine in BreakBox shares: bars,
+// swings, the house ATR, the house pivot detector, a hand-rolled EMA, and the
+// arithmetic helpers.
+//
+// ZERO `using NinjaTrader.*`, own namespace `BreakBoxCore`, C# 7.3 only. NT8
+// ships its own types under common names and compiles every file under
+// bin/Custom into ONE assembly, so a NinjaTrader using here is how a CS0101
+// duplicate-type clash starts. Purity is also what lets this exact file compile
+// both inside that assembly and in the net8 test runner (tests/), which has no
+// NinjaTrader assemblies on its reference path — the behaviour has to be
+// identical in both.
+//
+// WilderAtr, SwingDetector and BbMath are VERBATIM ports of VeeSnapTypes.cs
+// (itself ported from PatternZoneCore.cs). The ports are verbatim on purpose:
+// the ATR recursion and the pivot reveal rule are pinned by two other test
+// suites and mirrored in Python, so "improving" either of them here silently
+// forks three implementations. Only the namespace and the type prefix change.
+using System;
+using System.Collections.Generic;
+
+namespace BreakBoxCore
+{
+    public struct BbBar
+    {
+        public DateTime Time;
+        public double Open, High, Low, Close, Volume;
+    }
+
+    public struct BbSwing
+    {
+        public int BarIndex;
+        public DateTime Time;
+        public double Price;
+        public bool IsHigh;
+    }
+
+    // House Wilder recursion (VeeSnapTypes.cs:41-71): seed = tr[0] itself (a
+    // running mean of one sample), TR uses the previous bar's close, and it
+    // CROSSES SESSIONS — it never resets. The first ~period bars of a session
+    // therefore carry the overnight gap in their true range.
+    public sealed class WilderAtr
+    {
+        private readonly int _period;
+        private int _n;
+        private double _value;
+        private double _prevClose;
+
+        public WilderAtr(int period)
+        {
+            _period = period;
+        }
+
+        public void Update(BbBar bar)
+        {
+            double tr = _n == 0
+                ? bar.High - bar.Low
+                : Math.Max(bar.High - bar.Low, Math.Max(Math.Abs(bar.High - _prevClose), Math.Abs(bar.Low - _prevClose)));
+            _value = _n < _period ? (_value * _n + tr) / (_n + 1) : _value + (tr - _value) / _period;
+            _prevClose = bar.Close;
+            _n++;
+        }
+
+        public double Value { get { return _value; } }
+
+        // Warm, not merely non-zero: a partially warmed ATR is positive and
+        // shrinks every ATR-scaled gate proportionally, which reads as "the
+        // strategy took a trade it should not have" rather than as a warmup bug.
+        public bool IsWarm { get { return _n >= _period && _value > 0; } }
+
+        public int BarsFed { get { return _n; } }
+    }
+
+    // Hand-rolled EMA. Exists because two of the five stop sources the target's
+    // panel exposes are moving averages (`MA` and `E50`), and nt8c cannot
+    // resolve NT8's EMA() wrapper from a pure file (workspace gotcha) — but more
+    // importantly because the stop price has to be reproducible in the test
+    // runner, which has no NT8 assemblies at all.
+    //
+    // Seeded with the first sample rather than with a simple average of the
+    // first `period` samples: an SMA seed is a second recursion to reproduce and
+    // buys nothing once IsWarm gates the consumers anyway.
+    public sealed class Ema
+    {
+        private readonly int _period;
+        private readonly double _alpha;
+        private int _n;
+        private double _value;
+
+        public Ema(int period)
+        {
+            _period = period < 1 ? 1 : period;
+            _alpha = 2.0 / (_period + 1.0);
+        }
+
+        public void Update(double sample)
+        {
+            // Written as a*x + (1-a)*prev, NOT prev + a*(x-prev): the two forms
+            // differ in the last bits and only this one is exactly `x` at a = 1.
+            _value = _n == 0 ? sample : _alpha * sample + (1.0 - _alpha) * _value;
+            _n++;
+        }
+
+        public double Value { get { return _value; } }
+        public bool IsWarm { get { return _n >= _period; } }
+        public int BarsFed { get { return _n; } }
+    }
+
+    // House reveal rule (VeeSnapTypes.cs:78-124): the pivot sits `strength` bars
+    // back and is confirmed once its window fills; strict-unique max/min over the
+    // 2*strength+1 window — an equal extreme anywhere else in the window rejects
+    // it. One bar can confirm a high AND a low at once.
+    public sealed class SwingDetector
+    {
+        private readonly int _strength;
+        private readonly int _windowSize;
+        private readonly List<BbBar> _window = new List<BbBar>();
+
+        public SwingDetector(int strength)
+        {
+            _strength = strength;
+            _windowSize = 2 * strength + 1;
+        }
+
+        public List<BbSwing> Update(BbBar bar, int barIndex)
+        {
+            _window.Add(bar);
+            if (_window.Count > _windowSize)
+                _window.RemoveAt(0);
+
+            var result = new List<BbSwing>();
+            if (_window.Count < _windowSize)
+                return result;
+
+            BbBar candidate = _window[_strength];
+            int candidateIndex = barIndex - _strength;
+            double ph = candidate.High, pl = candidate.Low;
+            bool hiMax = true, loMin = true;
+            int hiEq = 0, loEq = 0;
+            for (int i = 0; i < _window.Count; i++)
+            {
+                BbBar w = _window[i];
+                if (w.High > ph) hiMax = false;
+                else if (w.High == ph) hiEq++;
+                if (w.Low < pl) loMin = false;
+                else if (w.Low == pl) loEq++;
+            }
+            if (hiMax && hiEq == 1)
+                result.Add(new BbSwing { BarIndex = candidateIndex, Time = candidate.Time, Price = ph, IsHigh = true });
+            if (loMin && loEq == 1)
+                result.Add(new BbSwing { BarIndex = candidateIndex, Time = candidate.Time, Price = pl, IsHigh = false });
+            return result;
+        }
+
+        public void Reset()
+        {
+            _window.Clear();
+        }
+    }
+
+    public static class BbMath
+    {
+        // Hand-rolled so every engine rounds identically, and so the test runner
+        // rounds the way NT8 will. Instrument.MasterInstrument.RoundToTickSize
+        // must NEVER touch a price computed here.
+        public static double RoundToTick(double px, double tick)
+        {
+            if (tick <= 0)
+                return px;
+            return Math.Floor(px / tick + 0.5) * tick;
+        }
+
+        public static double Clamp(double v, double lo, double hi)
+        {
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+
+        public static double Lerp(double a, double b, double u)
+        {
+            return a + (b - a) * u;
+        }
+
+        // Maps a score in [lo, hi] onto [0, 1], clamped. `hi <= lo` collapses to
+        // 0 rather than dividing by zero — a degenerate configuration must
+        // behave like "never aggressive", not like NaN, because every comparison
+        // against NaN is false and the guards would all fail open.
+        public static double Unit(double v, double lo, double hi)
+        {
+            if (hi <= lo)
+                return 0.0;
+            return Clamp((v - lo) / (hi - lo), 0.0, 1.0);
+        }
+
+        // ET seconds-of-day from an HHMM integer. 930 -> 34200. Used by every
+        // window parameter on the panel and in the strategy.
+        public static int HhmmToSecs(int hhmm)
+        {
+            int h = hhmm / 100;
+            int m = hhmm % 100;
+            return h * 3600 + m * 60;
+        }
+
+        // Is `secs` inside [start, end) on a clock that wraps at midnight? The
+        // ETH session opens at 18:00 and closes at 17:00 the next day, so EVERY
+        // window in this strategy can wrap and none of them may be compared with
+        // a naive start <= x < end.
+        public static bool InWindow(int secs, int startSecs, int endSecs)
+        {
+            if (startSecs == endSecs)
+                return false;                   // an empty window is empty, not "always"
+            return startSecs < endSecs
+                ? secs >= startSecs && secs < endSecs
+                : secs >= startSecs || secs < endSecs;
+        }
+    }
+}
