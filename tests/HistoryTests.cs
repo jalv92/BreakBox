@@ -212,14 +212,32 @@ public static class HistoryTests
             rows.Add(r);
         }
 
-        T.CheckInt(BbHistory.View(rows, "100t").Count, 100, "100t takes the last hundred trades");
+        T.CheckInt(BbHistory.View(rows, "100t", "").Count, 100, "100t takes the last hundred trades");
         // Windowed off the NEWEST RECORD, never DateTime.Now: a Replay file's
         // last trade is months old, and "today" against the wall clock would
         // render an empty chart with no explanation anywhere on the panel.
-        T.CheckInt(BbHistory.View(rows, "today").Count, 6, "today = the newest record's own day");
-        T.Check(BbHistory.View(rows, "20d").Count > 6, "20d is wider than today");
-        T.CheckInt(BbHistory.View(new List<BbTradeRecord>(), "20d").Count, 0, "an empty file yields no view");
-        T.CheckInt(BbHistory.View(null, "20d").Count, 0, "a null list does not throw");
+        T.CheckInt(BbHistory.View(rows, "today", "").Count, 6, "today = the newest record's own day");
+        T.Check(BbHistory.View(rows, "20d", "").Count > 6, "20d is wider than today");
+        T.CheckInt(BbHistory.View(new List<BbTradeRecord>(), "20d", "").Count, 0, "an empty file yields no view");
+        T.CheckInt(BbHistory.View(null, "20d", "").Count, 0, "a null list does not throw");
+
+        // The view that isolates the running configuration. Without it the curve
+        // pooled every config ever run, so switching engines could not move it.
+        List<BbTradeRecord> mixed = new List<BbTradeRecord>();
+        for (int i = 0; i < 6; i++)
+        {
+            BbTradeRecord r = default(BbTradeRecord);
+            r.Ts = new DateTime(2026, 8, 17, 10, i, 0);
+            r.Dir = 1;
+            r.Pnl = 10.0;
+            r.CfgHash = (i % 2 == 0) ? "aaaa1111" : "bbbb2222";
+            mixed.Add(r);
+        }
+        T.CheckInt(BbHistory.View(mixed, "cfg", "aaaa1111").Count, 3, "cfg keeps only the running config");
+        T.CheckInt(BbHistory.View(mixed, "cfg", "bbbb2222").Count, 3, "cfg keeps only the other config");
+        T.CheckInt(BbHistory.View(mixed, "cfg", "cccc3333").Count, 0, "an unseen config shows an empty curve");
+        T.CheckInt(BbHistory.View(mixed, "cfg", "").Count, 0, "before the config is built, cfg claims nothing");
+        T.CheckInt(BbHistory.View(mixed, "20d", "aaaa1111").Count, 6, "the time views ignore the config filter");
 
         double zeroY;
         T.CheckInt(BbHistory.SparkPoints(new double[0], 100, 50, out zeroY).Length, 0, "no points from no trades");

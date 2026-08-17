@@ -126,8 +126,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const double ChartH = 64;
 
         private string _histView = "20d";
-        private readonly Button[] _viewBtns = new Button[3];
-        private static readonly string[] ViewNames = { "today", "20d", "100t" };
+        private readonly Button[] _viewBtns = new Button[4];
+        // "cfg" is the only one of these that isolates the RUNNING config;
+        // the other three pool every configuration in their window.
+        private static readonly string[] ViewNames = { "today", "20d", "100t", "cfg" };
         private TextBlock _equityText, _statsText;
         private Canvas _chart;
         private WPolyline _equityLine, _equityLineNeg;
@@ -497,7 +499,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                     });
                 risk[i] = _riskBtns[i];
             }
-            s.Children.Add(Row2(Small("Risk"), Cols(risk)));
+            // Full width, label above: in a Row2 the Auto column swallowed the
+            // row, the "Risk" label collapsed to zero and any button past the
+            // third was clipped off the panel edge — which is how the E50 and
+            // Manual stop sources below became unreachable while still existing
+            // in BbStopSource. Cols is star-width, so N buttons always fit.
+            s.Children.Add(Small("Risk"));
+            s.Children.Add(Cols(risk));
 
             UIElement[] sl = new UIElement[SlNames.Length];
             for (int i = 0; i < SlNames.Length; i++)
@@ -512,7 +520,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 });
                 sl[i] = _slBtns[i];
             }
-            s.Children.Add(Row2(Small("Stop"), Cols(sl)));
+            s.Children.Add(Small("Stop"));
+            s.Children.Add(Cols(sl));
 
             s.Children.Add(Rule());
             return s;
@@ -548,7 +557,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 });
                 views[i] = _viewBtns[i];
             }
-            s.Children.Add(Row2(Section("HISTORY"), Cols(views)));
+            s.Children.Add(Section("HISTORY"));
+            s.Children.Add(Cols(views));
 
             // The dominant number. 22px because it is the one thing on this
             // panel a human reads from across the room.
@@ -914,7 +924,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void FillHistory(PanelSnap s)
         {
-            List<BbTradeRecord> view = BbHistory.View(_history, _histView);
+            List<BbTradeRecord> view = BbHistory.View(_history, _histView, _cfgHash);
             double[] cum = BbHistory.CumulativeEquity(view);
             double zeroY;
             // The POINTS are computed here, as plain doubles. PointCollection is

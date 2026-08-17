@@ -125,11 +125,29 @@ namespace BreakBoxCore
         // the NEWEST RECORD, not from DateTime.Now: a Replay file's last trade
         // is months old, and a wall-clock "today" would render an empty chart
         // with nothing on the panel to explain it.
-        public static List<BbTradeRecord> View(IReadOnlyList<BbTradeRecord> rows, string view)
+        public static List<BbTradeRecord> View(IReadOnlyList<BbTradeRecord> rows, string view, string cfgHash)
         {
             List<BbTradeRecord> outp = new List<BbTradeRecord>();
             if (rows == null || rows.Count == 0)
                 return outp;
+
+            // "cfg" — only the trades this exact configuration produced, over all
+            // of history rather than a time window. Every record was already
+            // tagged with the digest of the dials that decide what gets traded;
+            // until this view existed nothing ever READ the tag except the
+            // three-row trade list, so the curve, the total and the W/BE/L
+            // counts pooled every configuration ever run and a config change
+            // could not move them. This is the view that answers "is what I am
+            // running now working", which is the whole reason the chart is here.
+            if (view == "cfg")
+            {
+                if (string.IsNullOrEmpty(cfgHash))
+                    return outp;                    // config not built yet: claim nothing
+                for (int i = 0; i < rows.Count; i++)
+                    if (rows[i].CfgHash == cfgHash)
+                        outp.Add(rows[i]);
+                return outp;
+            }
 
             if (view == "100t")
             {
