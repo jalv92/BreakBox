@@ -256,6 +256,21 @@ namespace BreakBoxCore
             BlockDetail = "";
             GateDepth = -1;
         }
+
+        // How the panel should render ladder row `row` given `depth`, the index
+        // of the first failing gate (-1 = nothing blocks). 0 = passed,
+        // 1 = the blocker, 2 = never evaluated.
+        //
+        // Pure and here rather than in the panel because "everything after the
+        // blocker is DIMMED, not FAILED" is the entire point of the ladder: the
+        // engine short-circuits at the first failure, so the rows below it were
+        // never computed and any verdict on them is invented.
+        public static int RowState(int row, int depth)
+        {
+            if (depth < 0)
+                return 0;
+            return row < depth ? 0 : (row == depth ? 1 : 2);
+        }
     }
 
     // Seconds -> bars, and the bar-size estimate for non-time series. It lives

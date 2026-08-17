@@ -73,6 +73,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 all[i].Freeze();
         }
 
+        // DERIVED, computed from the engines' own published ladders — never a
+        // literal. An earlier draft of this brief hard-coded GateRows = 10 (and
+        // separately, transcribed copies of the two ladder arrays); both were
+        // already wrong by the time this landed, because Task 25 grew the cloud
+        // ladder from 6 to 12 rungs after that draft was written. A panel whose
+        // row count or labels drift from `BbCloud.GateLadder` /
+        // `BbEngine.GateLadder` paints green rows while the engine is blocked —
+        // the exact failure §9's ladder exists to end.
+        private static readonly int GateRows = Math.Max(BbCloud.GateLadder.Length, BbEngine.GateLadder.Length);
+
+        // Direct references to the engines' own arrays, not copies of their
+        // contents — the panel that reads these NEVER re-types a gate name.
+        private static readonly string[] BoxGates = BbEngine.GateLadder;
+        private static readonly string[] CloudGates = BbCloud.GateLadder;
+
+        private TextBlock _headline;
+        private readonly TextBlock[] _gateMark = new TextBlock[GateRows];
+        private readonly TextBlock[] _gateName = new TextBlock[GateRows];
+        private readonly TextBlock[] _gateVal = new TextBlock[GateRows];
+
         #endregion
 
         #region Construction
@@ -116,6 +136,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _panelRoot.Children.Add(actions);
 
                 _body = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
+                _body.Children.Add(BuildGateSection());
 
                 ScrollViewer scroll = new ScrollViewer
                 {
@@ -318,6 +339,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             b.Child = s;
             return b;
+        }
+
+        private UIElement BuildGateSection()
+        {
+            StackPanel s = new StackPanel();
+            s.Children.Add(Section("WHY NO TRADE"));
+
+            // The headline answers the question in words. Three numbers that did
+            // not exist in v1 live here: how far the nearest actionable price
+            // is, how many bars are left on the armed trigger, and what the
+            // token is doing.
+            _headline = Label("--");
+            _headline.TextWrapping = TextWrapping.Wrap;
+            _headline.Margin = new Thickness(0, 0, 0, 4);
+            s.Children.Add(_headline);
+
+            for (int i = 0; i < GateRows; i++)
+            {
+                _gateMark[i] = new TextBlock
+                {
+                    Text = "·",
+                    Foreground = DimBrush,
+                    FontSize = 11,
+                    Width = 14,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                _gateName[i] = Small("");
+                _gateVal[i] = Small("");
+
+                StackPanel left = new StackPanel { Orientation = Orientation.Horizontal };
+                left.Children.Add(_gateMark[i]);
+                left.Children.Add(_gateName[i]);
+                s.Children.Add(Row2(left, _gateVal[i]));
+            }
+
+            s.Children.Add(Rule());
+            return s;
         }
 
         #endregion

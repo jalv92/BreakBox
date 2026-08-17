@@ -16,6 +16,7 @@ public static class HistoryTests
         RoundTrip();
         EquityAndHash();
         WriteGuard();
+        GateLadder();
     }
 
     private static BbTradeRecord Rec()
@@ -137,5 +138,27 @@ public static class HistoryTests
         T.Check(BbHistory.FileName("MNQ 09-26", "Sim101") == "history-MNQ_09-26-Sim101.jsonl",
                 "the file name is one instrument, one account");
         T.Check(BbHistory.FileName(null, null).Length > 0, "nulls yield a name, not an exception");
+    }
+
+    private static void GateLadder()
+    {
+        T.Section("Panel — gate ladder row states");
+
+        // The defect this exists to make impossible: v1's panel printed READY
+        // while printing "(out of band)" two rows below and never related the
+        // two. A gate AFTER the blocker was never evaluated, so rendering it as
+        // OK is a lie and rendering it as FAILED is a different lie.
+        T.CheckInt(BbGateReport.RowState(0, 3), 0, "a gate before the blocker passed");
+        T.CheckInt(BbGateReport.RowState(2, 3), 0, "and the one right before it");
+        T.CheckInt(BbGateReport.RowState(3, 3), 1, "the blocker itself");
+        T.CheckInt(BbGateReport.RowState(4, 3), 2, "everything after it was NOT evaluated");
+
+        // depth = -1 is "nothing blocks": every row passed, none is dimmed.
+        T.CheckInt(BbGateReport.RowState(0, -1), 0, "nothing blocks: row 0 passed");
+        T.CheckInt(BbGateReport.RowState(5, -1), 0, "nothing blocks: the last row passed too");
+
+        // Warmup blocks at the first gate, which must not read as "all dimmed".
+        T.CheckInt(BbGateReport.RowState(0, 0), 1, "a warmup block is the blocker, not a dimmed row");
+        T.CheckInt(BbGateReport.RowState(1, 0), 2, "and everything below it is dimmed");
     }
 }
