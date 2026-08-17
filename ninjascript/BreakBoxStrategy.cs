@@ -533,16 +533,41 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool canTrade = _uiAutoTrade && !_lockout && _atr.IsWarm
                             && BbExits.StopSourceWarm(_exitCfg, _ma.IsWarm, _e50.IsWarm);
-            var a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade,
-                                  _inTrade || _entryPending);
+            bool positioned = _inTrade || _entryPending;
+
+            // §4.1 — ONE live trigger and ONE position across both engines, and a
+            // FIXED order: Cloud, then Box. The first Fire wins and the other is
+            // not evaluated on that bar. Two engines racing for one position is
+            // undefined behaviour, and undefined behaviour gets invented by
+            // whoever implements it next.
+            //
+            // Warm means EVERY indicator the cloud reads. It cannot ride on
+            // canTrade: §5.2 step 1b requires steps 2-4 to keep running with
+            // auto-trade off, and a cold ribbon EMA has to suppress all five
+            // gold-candle gates on its own, not just the ones canTrade covers.
+            bool cloudWarm = _atr.IsWarm && _emaFast.IsWarm && _emaSlow.IsWarm && _emaTrend.IsWarm;
+
+            // The cloud has no clock of its own for the entry window — it takes
+            // canTrade/positioned as suppression flags and nothing else. The box
+            // engine tests its own window internally (Core.cs), so this is
+            // folded in only for the cloud call.
+            bool windowOpen = BbMath.InWindow(secs, BbMath.HhmmToSecs(EntryWindowStartHhmm),
+                                                    BbMath.HhmmToSecs(EntryWindowEndHhmm));
+
+            BbAction a = default(BbAction);
+            if (_uiCloudOn)
+                a = _cloud.OnBar(bar, secs, _emaFast.Value, _emaSlow.Value, _emaTrend.Value,
+                                 _atr.Value, cloudWarm, canTrade && windowOpen, positioned);
+            if (!a.Fire)
+                a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade, positioned);
 
             if (ShowBox) DrawBox();
 
-            // canTrade is no longer re-tested here — the engine owns that
-            // decision now. The position checks stay: SubmitEntry while
+            // canTrade is no longer re-tested here — each engine owns that
+            // decision now. The position check stays: SubmitEntry while
             // positioned is the one mistake that costs real money, and it is
             // cheap to refuse twice.
-            if (a.Fire && !_inTrade && !_entryPending)
+            if (a.Fire && !positioned)
                 SubmitEntry(a);
             else if (_entryPending)
                 AgeWorkingEntry();
@@ -658,10 +683,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         // for the rest of the session.
         private void AgeWorkingEntry()
         {
-            _entryBarsWaiting++;                // display only; nothing decides on it
-            if (!_entryFromEngine || _engine == null || _owningEngine == BbEntryEngine.Cloud)
+            _entryBarsWaiting++;                // display only for the box path; the cloud path below decides on it
+            if (!_entryFromEngine)
                 return;
-            if (_engine.BreakArmed)
+
+            if (_owningEngine == BbEntryEngine.Cloud)
+            {
+                // Unlike the box engine, BbCloud carries no trigger-life clock of
+                // its own — nothing inside BbCloud.OnBar increments
+                // TriggerArmedBars against _cloudCfg.TriggerLife. §5.2 step 7
+                // says the SHELL is the one that watches the working order's age
+                // and cancels it; this is that clock.
+                if (_cloudCfg != null && _entryBarsWaiting > _cloudCfg.TriggerLife)
+                    CancelWorkingEntry("expired", true);
+                return;
+            }
+
+            if (_engine == null || _engine.BreakArmed)
                 return;
             CancelWorkingEntry("engine:" + _engine.LastDisarmReason, true);
         }
@@ -691,7 +729,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             _entryFromEngine = false;
             if (engineDisarmed)
             {
-                if (_owningEngine != BbEntryEngine.Cloud && _engine != null)
+                if (_owningEngine == BbEntryEngine.Cloud && _cloud != null)
+                    _cloud.OnTriggerExpired();
+                else if (_engine != null)
                     _engine.OnTriggerExpired();
             }
             else
@@ -700,13 +740,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // The single refusal callback. It routes on the OWNING engine (§4.1):
-        // only the box engine exists today, and BreakBoxCloud claims
-        // BbEntryEngine.Cloud here the moment it lands.
+        // The single refusal callback. It routes on the OWNING engine (§4.1).
         private void OnEntryRejected(BbEntryEngine engine, string reason)
         {
             Print("BreakBox: entry refused (" + reason + ")");
-            if (engine != BbEntryEngine.Cloud && _engine != null)
+            if (engine == BbEntryEngine.Cloud && _cloud != null)
+                _cloud.OnEntryRejected(reason);
+            else if (_engine != null)
                 _engine.OnEntryRejected(reason);
         }
 
@@ -859,7 +899,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _inTrade = true;
                 _entryFillPx = price;
                 _entryTime = time;
-                _engine.OnEntryFilled();
+                // The fill is what really spends the token/edge, and it belongs
+                // to the owner (§4.1). Routing this unconditionally to the box
+                // engine would spend the WRONG engine's memory on a cloud fill —
+                // the box would count a trade it never took, and the cloud's
+                // token/cooldown would never reset.
+                if (_owningEngine == BbEntryEngine.Cloud) _cloud.OnEntryFilled();
+                else _engine.OnEntryFilled();
                 _tradesToday++;
                 OpenBracket(price, execution.Order.Filled);
                 return;
