@@ -127,9 +127,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private string _histView = "20d";
         private readonly Button[] _viewBtns = new Button[4];
-        // "cfg" is the only one of these that isolates the RUNNING config;
-        // the other three pool every configuration in their window.
-        private static readonly string[] ViewNames = { "today", "20d", "100t", "cfg" };
+        // "all" is the only one of these that pools configurations. The other
+        // three isolate the RUNNING config, so switching engines moves the curve.
+        private static readonly string[] ViewNames = { "today", "20d", "100t", "all" };
         private TextBlock _equityText, _statsText;
         private Canvas _chart;
         private WPolyline _equityLine, _equityLineNeg;
@@ -956,12 +956,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             // point of this chart is telling whether the running config is
             // working, and a silent under-report defeats that. "100t" is never
             // affected: the cap is sized well above what 100 trades needs.
-            bool maybeTruncated = _historyCapped && _histView != "100t"
+            bool maybeTruncated = _historyCapped && _histView != "100t" && _histView != "all"
                 && view.Count > 0 && _history.Count > 0 && view[0].Ts == _history[0].Ts;
             string capNote = maybeTruncated
                 ? _histView + " (capped at " + BbHistory.MaxInMemory + ")   "
                 : "";
-            s.Stats = capNote + string.Format(CultureInfo.InvariantCulture,
+            // A config-filtered view with nothing in it is not "0 trades, 0% win" —
+            // it is a configuration that has not traded yet, and saying the first
+            // when you mean the second is how a fresh config reads as a failing one.
+            // NOT an early return: the three-row trade list is filled BELOW this,
+            // and skipping it would leave the previous configuration's trades on
+            // screen under a message saying this one has none.
+            s.Stats = view.Count == 0 && _histView != "all"
+                ? "no trades yet with this configuration  ·  press all"
+                : capNote + string.Format(CultureInfo.InvariantCulture,
                 "{0} trades   W{1} BE{2} L{3}   ·   {4} win",
                 view.Count, (int)s.WinN, (int)s.BeN, (int)s.LossN,
                 decided > 0 ? ((100.0 * s.WinN / decided).ToString("0", CultureInfo.InvariantCulture) + "%") : "--");

@@ -209,17 +209,18 @@ public static class HistoryTests
             BbTradeRecord r = Rec();
             r.Ts = new DateTime(2026, 8, 1).AddDays(i / 6).AddHours(9 + i % 6);
             r.Pnl = 10.0;
+            r.CfgHash = "aaaa1111";
             rows.Add(r);
         }
 
-        T.CheckInt(BbHistory.View(rows, "100t", "").Count, 100, "100t takes the last hundred trades");
+        T.CheckInt(BbHistory.View(rows, "100t", "aaaa1111").Count, 100, "100t takes the last hundred trades");
         // Windowed off the NEWEST RECORD, never DateTime.Now: a Replay file's
         // last trade is months old, and "today" against the wall clock would
         // render an empty chart with no explanation anywhere on the panel.
-        T.CheckInt(BbHistory.View(rows, "today", "").Count, 6, "today = the newest record's own day");
-        T.Check(BbHistory.View(rows, "20d", "").Count > 6, "20d is wider than today");
-        T.CheckInt(BbHistory.View(new List<BbTradeRecord>(), "20d", "").Count, 0, "an empty file yields no view");
-        T.CheckInt(BbHistory.View(null, "20d", "").Count, 0, "a null list does not throw");
+        T.CheckInt(BbHistory.View(rows, "today", "aaaa1111").Count, 6, "today = the newest record's own day");
+        T.Check(BbHistory.View(rows, "20d", "aaaa1111").Count > 6, "20d is wider than today");
+        T.CheckInt(BbHistory.View(new List<BbTradeRecord>(), "20d", "aaaa1111").Count, 0, "an empty file yields no view");
+        T.CheckInt(BbHistory.View(null, "20d", "aaaa1111").Count, 0, "a null list does not throw");
 
         // The view that isolates the running configuration. Without it the curve
         // pooled every config ever run, so switching engines could not move it.
@@ -233,11 +234,34 @@ public static class HistoryTests
             r.CfgHash = (i % 2 == 0) ? "aaaa1111" : "bbbb2222";
             mixed.Add(r);
         }
-        T.CheckInt(BbHistory.View(mixed, "cfg", "aaaa1111").Count, 3, "cfg keeps only the running config");
-        T.CheckInt(BbHistory.View(mixed, "cfg", "bbbb2222").Count, 3, "cfg keeps only the other config");
-        T.CheckInt(BbHistory.View(mixed, "cfg", "cccc3333").Count, 0, "an unseen config shows an empty curve");
-        T.CheckInt(BbHistory.View(mixed, "cfg", "").Count, 0, "before the config is built, cfg claims nothing");
-        T.CheckInt(BbHistory.View(mixed, "20d", "aaaa1111").Count, 6, "the time views ignore the config filter");
+        T.CheckInt(BbHistory.View(mixed, "20d", "aaaa1111").Count, 3, "a window keeps only the running config");
+        T.CheckInt(BbHistory.View(mixed, "20d", "bbbb2222").Count, 3, "and switching config switches the curve");
+        T.CheckInt(BbHistory.View(mixed, "today", "aaaa1111").Count, 3, "today filters by config too");
+        T.CheckInt(BbHistory.View(mixed, "100t", "aaaa1111").Count, 3, "so does the trade-count window");
+        T.CheckInt(BbHistory.View(mixed, "20d", "cccc3333").Count, 0, "a config that never traded shows nothing");
+        T.CheckInt(BbHistory.View(mixed, "20d", "").Count, 0, "before the config is built, nothing is claimed");
+        T.CheckInt(BbHistory.View(mixed, "all", "aaaa1111").Count, 6, "only \"all\" pools every configuration");
+        T.CheckInt(BbHistory.View(mixed, "all", "").Count, 6, "and it needs no hash to do it");
+
+        // "100t" takes the last hundred OF THIS CONFIG, not this config's share of
+        // the last hundred overall — otherwise a new config reads as nearly empty
+        // for as long as the old one's trades occupy the window.
+        List<BbTradeRecord> deep = new List<BbTradeRecord>();
+        for (int i = 0; i < 260; i++)
+        {
+            BbTradeRecord r = default(BbTradeRecord);
+            r.Ts = new DateTime(2026, 8, 1).AddMinutes(i);
+            r.Dir = 1;
+            r.Pnl = 1.0;
+            r.CfgHash = i < 130 ? "old00000" : "new00000";
+            deep.Add(r);
+        }
+        T.CheckInt(BbHistory.View(deep, "100t", "new00000").Count, 100, "the newest config fills its own hundred");
+        T.CheckInt(BbHistory.View(deep, "100t", "old00000").Count, 100, "and so does the older one");
+        List<BbTradeRecord> got = BbHistory.View(deep, "100t", "old00000");
+        T.Check(got[got.Count - 1].Ts == new DateTime(2026, 8, 1).AddMinutes(129),
+                "and it ends on that config's own last trade");
+        T.Check(got[0].Ts < got[got.Count - 1].Ts, "the window comes back in chronological order");
 
         double zeroY;
         T.CheckInt(BbHistory.SparkPoints(new double[0], 100, 50, out zeroY).Length, 0, "no points from no trades");

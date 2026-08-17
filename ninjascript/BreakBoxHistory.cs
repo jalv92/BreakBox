@@ -131,36 +131,45 @@ namespace BreakBoxCore
             if (rows == null || rows.Count == 0)
                 return outp;
 
-            // "cfg" — only the trades this exact configuration produced, over all
-            // of history rather than a time window. Every record was already
-            // tagged with the digest of the dials that decide what gets traded;
-            // until this view existed nothing ever READ the tag except the
-            // three-row trade list, so the curve, the total and the W/BE/L
-            // counts pooled every configuration ever run and a config change
-            // could not move them. This is the view that answers "is what I am
-            // running now working", which is the whole reason the chart is here.
-            if (view == "cfg")
+            // "all" is the ONLY view that pools configurations. Every other one
+            // answers "is what I am running now working", which is the question
+            // this chart exists for — and a curve that cannot move when the engine
+            // is switched answers nothing at all. Each record was already tagged
+            // with the digest of the dials that decide what gets traded; for a long
+            // time nothing read that tag except the three-row trade list.
+            //
+            // Resizing is safe: risk and qty are dropped from the digest (Excluded),
+            // so only a dial that changes WHAT is traded starts a new curve.
+            bool byCfg = view != "all";
+            if (byCfg && string.IsNullOrEmpty(cfgHash))
+                return outp;                    // config not built yet: claim nothing
+
+            // The config filter comes FIRST, then the window: "100t" means the last
+            // hundred trades OF THIS CONFIG, not this config's share of the last
+            // hundred overall — otherwise a new config shows a nearly empty chart
+            // for as long as the previous one's trades occupy the window.
+            if (view == "100t")
             {
-                if (string.IsNullOrEmpty(cfgHash))
-                    return outp;                    // config not built yet: claim nothing
-                for (int i = 0; i < rows.Count; i++)
+                for (int i = rows.Count - 1; i >= 0 && outp.Count < 100; i--)
                     if (rows[i].CfgHash == cfgHash)
                         outp.Add(rows[i]);
+                outp.Reverse();
                 return outp;
             }
 
-            if (view == "100t")
+            if (!byCfg)
             {
-                int from = rows.Count > 100 ? rows.Count - 100 : 0;
-                for (int i = from; i < rows.Count; i++)
+                for (int i = 0; i < rows.Count; i++)
                     outp.Add(rows[i]);
                 return outp;
             }
 
+            // Windowed off the NEWEST RECORD IN THE FILE, not the newest of this
+            // config: "today" has to mean today whichever config produced it.
             int days = view == "today" ? 1 : 20;
             DateTime cut = rows[rows.Count - 1].Ts.Date.AddDays(1 - days);
             for (int i = 0; i < rows.Count; i++)
-                if (rows[i].Ts.Date >= cut)
+                if (rows[i].Ts.Date >= cut && rows[i].CfgHash == cfgHash)
                     outp.Add(rows[i]);
             return outp;
         }

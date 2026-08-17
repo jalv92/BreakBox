@@ -1182,6 +1182,26 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        // The stop and every tier limit belonging to the trade that just ended.
+        // Anything not already in a terminal state gets cancelled: PartFilled is
+        // neither Working nor Accepted, and omitting it is the same oversight that
+        // once abandoned a part-filled entry as a naked position.
+        private void CancelBracketLegs()
+        {
+            CancelIfLive(_stopOrder);
+            for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
+                CancelIfLive(_tierOrders[i]);
+        }
+
+        private void CancelIfLive(Order o)
+        {
+            if (o == null)
+                return;
+            if (o.OrderState != OrderState.Filled && o.OrderState != OrderState.Cancelled
+                && o.OrderState != OrderState.Rejected)
+                CancelOrder(o);
+        }
+
         private static bool IsTierSig(string sig)
         {
             for (int i = 0; i < TierSig.Length; i++)
@@ -1222,6 +1242,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             _flattenPending = false;
             _stopChangePending = false;
             _lastStopSent = double.NaN;
+
+            // Cancel whatever is still resting, BEFORE the references are dropped.
+            // Nothing in this strategy ever cancelled these, and every one was
+            // submitted liveUntilCancelled: after the last take-profit filled, the
+            // protective stop stayed working against a position that no longer
+            // existed. Ordering matters — _inTrade is already false above, so the
+            // "a stop cancelled while positioned is a human pulling it in Chart
+            // Trader" branch in OnOrderUpdate cannot misread these, and CancelOrder
+            // can deliver its update in-stack.
+            CancelBracketLegs();
+
             _entryOrder = null;
             _stopOrder = null;
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
