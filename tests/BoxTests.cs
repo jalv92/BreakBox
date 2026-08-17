@@ -22,6 +22,7 @@ public static class BoxTests
         FormationExcludesTheCurrentBar();
         SealFreezesTheEdges();
         InvalidateOnBreakAndOnAge();
+        ValidityIsRelativeToEarlierBoxes();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -237,5 +238,43 @@ public static class BoxTests
             u = u.AddSeconds(30);
         }
         T.CheckInt(st2.Box.Id, 2, "an aged-out box is replaced by the next candidate to seal");
+    }
+
+    private static void ValidityIsRelativeToEarlierBoxes()
+    {
+        T.Section("Box — the validity gate is a ratio against boxes sealed BEFORE it");
+
+        // Seed one 3.0-point box. A 1.0-point box then rates 0.333, below
+        // BoxValidLo = 0.4, so it is refused. If the box pushed its own range
+        // into the denominator first the mean would be 2.0 and the ratio 0.5 —
+        // valid. That is the discrimination this test exists for: a box that
+        // helps set its own mean always looks normal.
+        var cfg = Cfg();
+        cfg.BoxMeanSamples = 1;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        eng.SeedSealedRange(3.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box != null, "sealed");
+        T.Check(!st.Box.Valid, "0.33x the mean of earlier boxes is out of band");
+
+        // Same 1.0-point box against a 1.0-point history: ratio 1.0, valid.
+        var st2 = new BbEngineState();
+        var eng2 = new BbEngine(cfg, st2);
+        eng2.SeedSealedRange(1.0);
+
+        DateTime u = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            Step(eng2, u, 100.0, 100.5, 99.5, 100.0, 2.0);
+            u = u.AddSeconds(30);
+        }
+        T.Check(st2.Box.Valid, "1.0x the mean is in band");
     }
 }

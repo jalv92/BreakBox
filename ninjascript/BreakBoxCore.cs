@@ -457,12 +457,24 @@ namespace BreakBoxCore
 
         private void Seal(double range, DateTime t)
         {
+            // The denominator is read BEFORE this box's own range is pushed:
+            // §6.1 says "boxes sealed strictly BEFORE this one", and a box that
+            // contributes to its own mean always rates about 1.0 — the gate
+            // would pass everything and mean nothing.
+            //
+            // A RATIO, not an ATR band. This is the v1 defect stated positively:
+            // a bar-window range over a bar-window range is dimensionless, so it
+            // carries across bar sizes and instruments untouched.
+            double mean = SealedMean();
+            double ratio = mean > 0.0 ? range / mean : double.NaN;
+            bool valid = !double.IsNaN(ratio) && ratio >= _cfg.BoxValidLo && ratio <= _cfg.BoxValidHi;
+
             _st.Box = new BbBox
             {
                 High = _st.CandHigh,
                 Low = _st.CandLow,
                 SealedAt = t,
-                Valid = false,              // the validity gate fills this in (Task 44)
+                Valid = valid,
                 Id = _st.NextBoxId++
             };
             _st.BoxAge = 0;
@@ -472,6 +484,30 @@ namespace BreakBoxCore
             _st.CandOpen = false;
             _st.CandBars = 0;
 
+            _st.SealedRanges[_st.SealedIdx] = range;
+            _st.SealedIdx = (_st.SealedIdx + 1) % _st.SealedRanges.Length;
+            if (_st.SealedFilled < _st.SealedRanges.Length)
+                _st.SealedFilled++;
+            _st.SealedCount++;
+        }
+
+        private double SealedMean()
+        {
+            if (_st.SealedFilled < 1)
+                return 0.0;
+            double s = 0.0;
+            for (int i = 0; i < _st.SealedFilled; i++)
+                s += _st.SealedRanges[i];
+            return s / _st.SealedFilled;
+        }
+
+        // The cold-start seam. The shell replays box ranges from the §10 history
+        // file at DataLoaded so day 1 is not a dead day. Pure: it takes a number,
+        // never a file — the I/O lives in BreakBoxStrategy.cs.
+        public void SeedSealedRange(double range)
+        {
+            if (range <= 0.0 || double.IsNaN(range))
+                return;
             _st.SealedRanges[_st.SealedIdx] = range;
             _st.SealedIdx = (_st.SealedIdx + 1) % _st.SealedRanges.Length;
             if (_st.SealedFilled < _st.SealedRanges.Length)
