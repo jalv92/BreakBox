@@ -141,7 +141,57 @@ namespace BreakBoxCore
             }
 
             _st.Gate.Clear();
+
+            // Step 2 — regime, LATCHED.
+            UpdateRegime(bar, eF, eS, eT, atr);
+            if (_st.RegimeLatched == 0)
+            {
+                _st.Gate.Set("regime", "flat — need close/ribbon/slope aligned", 1);
+                return a;
+            }
+
             return a;
+        }
+
+        // The latch is the fix for the single worst defect in the first draft of
+        // the design. The token is minted by a pullback that TOUCHES the far edge
+        // eS, and a pullback that deep normally drags eF to or below eS within a
+        // bar or two. Testing the instantaneous regime would zero it there and
+        // kill the token before the reclaim bar it exists to wait for: mint and
+        // destroy on the same move, every time. Steps 3-5 read RegimeLatched.
+        private void UpdateRegime(BbBar bar, double eF, double eS, double eT, double atr)
+        {
+            // Per-bar slope against a fixed 10-bar reference, so the gate carries
+            // across bar sizes instead of going soft on 2m and hard on 15s (§8).
+            double slope = (eT - SlopeAgo(_cfg.TrendSlopeLookback)) / _cfg.TrendSlopeLookback;
+            double need = _cfg.TrendSlopeAtr * atr / BbCloudConfig.RefLookbackBars;
+
+            int now = 0;
+            if (bar.Close > eT && eF > eS && eS > eT && slope >= need) now = +1;
+            else if (bar.Close < eT && eF < eS && eS < eT && slope <= -need) now = -1;
+
+            if (now != 0)
+            {
+                _st.RegimeLatched = now;
+                _st.RegimeLatchedAgeBars = 0;
+                return;
+            }
+
+            // "Instantaneous regime went to 0" is NOT a clear — that is the whole
+            // point of the latch. Only the three below clear it.
+            _st.RegimeLatchedAgeBars++;
+            if (_st.RegimeLatched == 0)
+                return;
+
+            bool closedThrough = _st.RegimeLatched > 0 ? bar.Close < eT : bar.Close > eT;
+            if (closedThrough || _st.RegimeLatchedAgeBars > _cfg.RegimeMemory)
+                ClearRegime();
+        }
+
+        private void ClearRegime()
+        {
+            _st.RegimeLatched = 0;
+            _st.RegimeLatchedAgeBars = 0;
         }
 
         #region Slope ring
