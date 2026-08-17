@@ -4,3 +4,4 @@ obj/
 *.suo
 tmp/
 .DS_Store
+.superpowers/
