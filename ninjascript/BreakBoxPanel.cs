@@ -353,14 +353,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            // NOT "WARMING", and not "--". Until the first bar closes nothing
-            // in this panel has been measured, and a placeholder that names a
-            // real state is the panel telling the operator something it does
-            // not know — the exact failure this component exists to end. It
-            // also persists indefinitely if the strategy is attached outside
-            // market hours, so "no data yet" and "warming up" must not look
-            // alike. Every one of these placeholders says which it is.
-            _statusText = Label(PlaceholderStatus);
+            // Not "WARMING": every field on this panel is filled from the first
+            // bar close onward, so before that there is nothing measured. A
+            // placeholder naming a real state would claim otherwise, and it
+            // persists indefinitely when the strategy is attached out of hours.
+            _statusText = Label("NO DATA");
             st.Children.Add(_statusDot);
             st.Children.Add(_statusText);
 
@@ -405,7 +402,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // not exist in v1 live here: how far the nearest actionable price
             // is, how many bars are left on the armed trigger, and what the
             // token is doing.
-            _headline = Label("--");
+            _headline = Label("Waiting for the first bar to close.");
             _headline.TextWrapping = TextWrapping.Wrap;
             _headline.Margin = new Thickness(0, 0, 0, 4);
             s.Children.Add(_headline);
@@ -525,8 +522,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             StackPanel s = new StackPanel();
             s.Children.Add(Section("SESSION"));
-            _sessionA = Small("--");
-            _sessionB = Small("--");
+            _sessionA = Small("Waiting for the first bar to close.");
+            _sessionB = Small("");
             s.Children.Add(_sessionA);
             s.Children.Add(_sessionB);
             s.Children.Add(Rule());
@@ -557,7 +554,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // panel a human reads from across the room.
             _equityText = new TextBlock
             {
-                Text = "--",
+                Text = "NO DATA",
                 Foreground = TextBrush,
                 FontSize = 22,
                 Margin = new Thickness(0, 2, 0, 2)
@@ -582,7 +579,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _chart.Children.Add(_equityLine);
             s.Children.Add(_chart);
 
-            _statsText = Small("--");
+            _statsText = Small("Waiting for the first bar to close.");
             s.Children.Add(_statsText);
 
             // Stacked W / BE / L. The widths are star weights set at update
