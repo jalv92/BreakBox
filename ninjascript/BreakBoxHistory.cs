@@ -104,6 +104,72 @@ namespace BreakBoxCore
             return seen == RequiredMask;
         }
 
+        // Running sum, one point per trade. Not a rolling window and not
+        // resampled by time: the x axis is TRADES, so a quiet day does not
+        // stretch the curve and a busy one does not compress it.
+        public static double[] CumulativeEquity(IReadOnlyList<BbTradeRecord> rows)
+        {
+            if (rows == null || rows.Count == 0)
+                return new double[0];
+            double[] cum = new double[rows.Count];
+            double run = 0.0;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                run += rows[i].Pnl;
+                cum[i] = run;
+            }
+            return cum;
+        }
+
+        // Keys that scale SIZE rather than change the DECISION. The shell hands
+        // in everything it has, including risk, and the drop happens here — in
+        // the file the assert suite can see — rather than at the impure call
+        // site. §10: including `_uiRiskMult` would fragment the curve into a
+        // new colour every time the user touches the Risk buttons, which
+        // defeats the entire point of the seam.
+        private static readonly string[] Excluded = { "risk" };
+
+        public static string Canonical(IReadOnlyList<string> pairs)
+        {
+            if (pairs == null || pairs.Count == 0)
+                return "";
+            List<string> keep = new List<string>(pairs.Count);
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                string p = pairs[i];
+                if (string.IsNullOrEmpty(p))
+                    continue;
+                int eq = p.IndexOf('=');
+                string key = eq < 0 ? p : p.Substring(0, eq);
+                bool drop = false;
+                for (int k = 0; k < Excluded.Length; k++)
+                    if (string.Equals(key, Excluded[k], StringComparison.Ordinal))
+                        drop = true;
+                if (!drop)
+                    keep.Add(p);
+            }
+            // Sorted, so a reordering of BuildConfigs' own statements does not
+            // read as a configuration change and dim every historical trade.
+            keep.Sort(StringComparer.Ordinal);
+            return string.Join(";", keep.ToArray());
+        }
+
+        // SHA-1, first 8 hex chars. A fingerprint, not a security primitive:
+        // 4 billion buckets against a few dozen configurations a year, and it
+        // has to fit in a 300px panel row next to the trade.
+        public static string Hash(string canonicalConfig)
+        {
+            string s = canonicalConfig == null ? "" : canonicalConfig;
+            using (System.Security.Cryptography.SHA1 sha = System.Security.Cryptography.SHA1.Create())
+            {
+                byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
+                StringBuilder sb = new StringBuilder(8);
+                for (int i = 0; i < 4; i++)
+                    sb.Append(h[i].ToString("x2", CultureInfo.InvariantCulture));
+                return sb.ToString();
+            }
+        }
+
         // "R" is the round-trip format: parse(format(x)) == x exactly. "0.00"
         // would quietly re-quantise every price the panel later subtracts.
         private static string Num(double v)

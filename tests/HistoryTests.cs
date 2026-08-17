@@ -14,6 +14,7 @@ public static class HistoryTests
     public static void Run()
     {
         RoundTrip();
+        EquityAndHash();
     }
 
     private static BbTradeRecord Rec()
@@ -65,5 +66,45 @@ public static class HistoryTests
         T.Check(!BbHistory.TryParse("{\"ts\":\"2026-08-16T14:37:30\",\"dir\":-1", out junk),
                 "a truncated line is rejected, not half-read");
         T.Check(!BbHistory.TryParse("not json at all", out junk), "garbage rejected");
+    }
+
+    private static void EquityAndHash()
+    {
+        T.Section("History — cumulative equity and the config digest");
+
+        List<BbTradeRecord> rows = new List<BbTradeRecord>();
+        T.CheckInt(BbHistory.CumulativeEquity(rows).Length, 0, "an empty file yields an empty curve");
+        T.CheckInt(BbHistory.CumulativeEquity(null).Length, 0, "a null list does not throw");
+
+        double[] pnls = { 100.0, -50.5, 25.0 };
+        for (int i = 0; i < pnls.Length; i++)
+        {
+            BbTradeRecord r = Rec();
+            r.Pnl = pnls[i];
+            rows.Add(r);
+        }
+        double[] cum = BbHistory.CumulativeEquity(rows);
+        T.CheckInt(cum.Length, 3, "one point per trade");
+        T.CheckClose(cum[0], 100.0, "cum after trade 1");
+        T.CheckClose(cum[1], 49.5, "cum after the loss");
+        T.CheckClose(cum[2], 74.5, "cum after trade 3");
+
+        // The digest is what draws the seam between configurations. If it moved
+        // when the user clicked Risk 1.5x, every touch of the size dial would
+        // dim the whole history and the seam would mean nothing.
+        string a = BbHistory.Canonical(new List<string> { "cloud=1", "box=0", "risk=1" });
+        string b = BbHistory.Canonical(new List<string> { "cloud=1", "box=0", "risk=1.5" });
+        T.Check(a == b, "risk is excluded from the canonical string");
+        T.Check(BbHistory.Hash(a) == BbHistory.Hash(b), "and therefore from the hash");
+
+        // Order-independent: BuildConfigs may append in any order it likes.
+        string c = BbHistory.Canonical(new List<string> { "box=0", "cloud=1" });
+        T.Check(a == c, "the canonical string is order-independent");
+
+        string d = BbHistory.Canonical(new List<string> { "cloud=0", "box=0" });
+        T.Check(BbHistory.Hash(a) != BbHistory.Hash(d), "a real config change DOES move the hash");
+        T.CheckInt(BbHistory.Hash(a).Length, 8, "8 hex chars, sized to fit a panel row");
+        T.Check(BbHistory.Hash(a) == BbHistory.Hash(a), "the hash is stable across calls");
+        T.CheckInt(BbHistory.Hash(null).Length, 8, "a null config hashes rather than throwing");
     }
 }
