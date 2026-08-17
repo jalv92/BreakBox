@@ -358,9 +358,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _swings = new SwingDetector(SwingStrength);
                 OpenHistory();
 
-                if (BarsPeriod.BarsPeriodType != BarsPeriodType.Minute || BarsPeriod.Value != 1)
-                    Print("BreakBox WARNING: primary series is not 1-Minute. Every ATR gate and bar budget "
-                          + "in the core counts 1m bars; this is a different experiment.");
+                // v2's scaling contract expresses every horizon in seconds and
+                // converts it through BbScale.Bars(_barSec) — a 30s chart is an
+                // intended configuration, not "a different experiment" (that was
+                // v1's 1m-only assumption and is now false). The only case still
+                // worth a warning is a non-time-based series (Tick/Volume/Range):
+                // BarSeconds() ESTIMATES _barSec there instead of reading it
+                // exactly, so every seconds-based horizon inherits that
+                // approximation. The "fallback" flavor of that (too little
+                // history to even estimate) already prints its own warning
+                // inside BarSeconds() — this only covers the "estimated but
+                // usable" flavor, so the two don't double up.
+                if (_barSecLabel.StartsWith("est,", StringComparison.Ordinal))
+                    Print("BreakBox WARNING: " + BarsPeriod.BarsPeriodType + " series — bar size "
+                          + "above is ESTIMATED from history gaps, not exact wall-clock time. Every "
+                          + "seconds-based horizon (ATR gates, bar budgets, TriggerLife, ...) converts "
+                          + "through it, so all of them inherit that approximation.");
             }
             else if (State == State.Realtime)
             {
@@ -1369,6 +1382,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Drawing
 
+        // Mirrors BreakBoxVision.PaintBox() (BreakBoxVision.cs:441) — see that
+        // comment for the full reasoning. Three bugs this replaces:
+        //   - Tag("box")/Tag("boxlab") mint a NEW tag every new box (the
+        //     box.Id guard above only stops re-drawing the SAME box, not
+        //     the accumulation of one permanent rectangle per box across
+        //     the session). A stable tag keyed on box.Id means a redraw of
+        //     that same id replaces the old drawing instead of stacking a
+        //     new one — cheap insurance against a recalc re-running
+        //     OnBarUpdate over history and re-emitting the same box ids.
+        //   - Right edge was `Time[0].AddHours(4)` (480 bars on a 30s
+        //     chart) instead of `Time[1]`, so every box's rectangle spanned
+        //     nearly the whole visible window and they all overlapped.
+        //   - Left edge was `box.SealedAt` (the sealing bar) instead of
+        //     walking back the box's own BoxLookback — WindowRange() reads
+        //     its ring BEFORE the sealing bar is pushed, so SealedAt was
+        //     never part of the measured range.
         private void DrawBox()
         {
             var box = _engine.Box;
@@ -1376,10 +1405,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             _lastDrawnBoxId = box.Id;
 
+            int barsBack = Math.Min(_cfg.BoxLookback, CurrentBar);
+            DateTime left = Time[barsBack];
+
             Brush b = box.Valid ? Brushes.DeepSkyBlue : Brushes.Gray;
-            DrawTag(Draw.Rectangle(this, Tag("box"), false, box.SealedAt, box.Low, Time[0].AddHours(4),
+            DrawTag(Draw.Rectangle(this, "bb_box_" + box.Id, false, left, box.Low, Time[1],
                                    box.High, b, b, 12));
-            DrawTag(Draw.Text(this, Tag("boxlab"), box.Valid ? "BOX" : "BOX (out of band)", 0,
+            DrawTag(Draw.Text(this, "bb_boxlab_" + box.Id, box.Valid ? "BOX" : "BOX (out of band)", 0,
                               box.High + 4 * TickSize, b));
         }
 
