@@ -160,10 +160,10 @@ namespace BreakBoxCore
         public int ArmDir;
         public double ArmTriggerPx;
         public int TriggerArmedBars;
-        // Why the last disarm happened — the arm/expire/reject machinery lands
-        // in T44+, but the shell's §4.1 arbitration (AgeWorkingEntry,
-        // OnEntryRejected routing) already reads this every bar and must keep
-        // compiling and logging a reason across the rewrite.
+        // Why the last disarm happened. Read by the shell's §4.1 arbitration
+        // (AgeWorkingEntry) as "engine:" + LastDisarmReason for the log line
+        // and CancelWorkingEntry's reason when it catches up to an expiry the
+        // engine already applied to itself.
         public string DisarmReason = "";
 
         // Counters
@@ -209,8 +209,7 @@ namespace BreakBoxCore
 
         // The shell's §4.1 arbitration (AgeWorkingEntry) reads this every bar a
         // trigger is working to decide whether the resting order it produced is
-        // still wanted. Arming itself lands in T44+; until then this simply
-        // never goes true, which is the correct "nothing armed" answer.
+        // still wanted.
         public bool BreakArmed { get { return _st.Armed; } }
         public string LastDisarmReason { get { return _st.DisarmReason; } }
 
