@@ -419,18 +419,5 @@ namespace BreakBoxCore
             br.StopPx = stopPx;
             br.StopCancelled = cancelled;
         }
-
-        // How many contracts the remaining tiers still cover. The shell compares
-        // this against the real position every bar: a mismatch means a leg was
-        // rejected or cancelled and the position is partly naked, which is the
-        // one bracket failure that costs real money.
-        public static int CoveredQty(BbBracket br)
-        {
-            int covered = 0;
-            for (int i = 0; i < br.Tiers; i++)
-                if (!br.TierFilled[i])
-                    covered += br.TargetQty[i];
-            return covered;
-        }
     }
 }

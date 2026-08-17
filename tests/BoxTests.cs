@@ -136,21 +136,6 @@ public static class BoxTests
                 "and counts it (got '" + st.Gate.BlockDetail + "')");
         T.CheckInt(st.Gate.GateDepth, 1, "cold start sits at ladder depth 1");
         T.Check(st.SealedCount > 0, "boxes still sealed while the engine was disabled");
-
-        // Seeded history clears it: day 1 is not a dead day.
-        var st2 = new BbEngineState();
-        var eng2 = new BbEngine(cfg, st2);
-        eng2.SeedSealedRange(1.0);
-        eng2.SeedSealedRange(1.0);
-        eng2.SeedSealedRange(1.0);
-
-        DateTime u = Open;
-        for (int i = 0; i < 6; i++)
-        {
-            Step(eng2, u, 100.0, 100.5, 99.5, 100.0, 2.0);
-            u = u.AddSeconds(30);
-        }
-        T.Check(st2.Gate.Block != "box warming", "seeded history clears the cold start");
     }
 
     private static void SampleRingIsNotSelfSelected()
@@ -341,7 +326,7 @@ public static class BoxTests
         cfg.BoxMeanSamples = 1;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
-        eng.SeedSealedRange(3.0);
+        Seed(st, 3.0);
 
         DateTime t = Open;
         for (int i = 0; i < 6; i++)
@@ -355,7 +340,7 @@ public static class BoxTests
         // Same 1.0-point box against a 1.0-point history: ratio 1.0, valid.
         var st2 = new BbEngineState();
         var eng2 = new BbEngine(cfg, st2);
-        eng2.SeedSealedRange(1.0);
+        Seed(st2, 1.0);
 
         DateTime u = Open;
         for (int i = 0; i < 6; i++)
@@ -374,7 +359,7 @@ public static class BoxTests
         cfg.BoxMeanSamples = 1;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
-        eng.SeedSealedRange(1.0);
+        Seed(st, 1.0);
 
         DateTime t = Open;
         for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
@@ -408,7 +393,7 @@ public static class BoxTests
         // still there, still valid, still aging — the engine simply may not act.
         var st2 = new BbEngineState();
         var eng2 = new BbEngine(cfg, st2);
-        eng2.SeedSealedRange(1.0);
+        Seed(st2, 1.0);
         DateTime u = Open;
         for (int i = 0; i < 6; i++)
         {
@@ -445,7 +430,7 @@ public static class BoxTests
         cfg.BoxMeanSamples = 1;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
-        eng.SeedSealedRange(1.0);
+        Seed(st, 1.0);
 
         DateTime t = Open;
         for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
@@ -526,7 +511,7 @@ public static class BoxTests
         cfg.BoxMeanSamples = 1;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
-        eng.SeedSealedRange(1.0);
+        Seed(st, 1.0);
 
         DateTime t = Open;
         for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
@@ -594,7 +579,7 @@ public static class BoxTests
         cfg.BoxArmCooldown = 6;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
-        eng.SeedSealedRange(1.0);
+        Seed(st, 1.0);
 
         DateTime t = Open;
         for (int i = 0; i < 6; i++)

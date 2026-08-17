@@ -296,7 +296,6 @@ public static class BracketTests
         T.CheckClose(br.StopPx, 104.00, "back to the chandelier price");
 
         // Coverage accounting: two tiers filled, the runner is still covered.
-        T.CheckInt(BbExits.CoveredQty(br), br.TargetQty[2], "covered qty == the runner");
         T.CheckInt(br.QtyOpen, br.TargetQty[2], "open qty agrees");
     }
 

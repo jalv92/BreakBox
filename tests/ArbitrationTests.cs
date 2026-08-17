@@ -66,6 +66,18 @@ public static class ArbitrationTests
         return eng.OnBar(Bar(i, o, h, l, c), Secs(Tm(i)), Tm(i).Date, atr, true, true, false);
     }
 
+    // No production seam seeds the sealed-range ring — `SeedSealedRange` was
+    // dead and was deleted. Four lines lifted verbatim from `Seal()`, same as
+    // BoxTests.
+    private static void Seed(BbEngineState st, double range)
+    {
+        st.SealedRanges[st.SealedIdx] = range;
+        st.SealedIdx = (st.SealedIdx + 1) % st.SealedRanges.Length;
+        if (st.SealedFilled < st.SealedRanges.Length)
+            st.SealedFilled++;
+        st.SealedCount++;
+    }
+
     // ---- Cloud side. Recipe lifted verbatim from CloudTests.TokenMintAndElseIf:
     // ten clean uptrend bars latch the regime, then one touch of the far ribbon
     // edge (eS) mints the token.
@@ -99,7 +111,7 @@ public static class ArbitrationTests
         // Arm BOTH engines, independently, the way the shell drives them.
         var boxSt = new BbEngineState();
         var boxEng = new BbEngine(BoxCfg(), boxSt);
-        boxEng.SeedSealedRange(1.0);
+        Seed(boxSt, 1.0);
         for (int i = 0; i < 6; i++)                                       // seals a 100.5/99.5 box on bar 6
             BoxStep(boxEng, i, 100.0, 100.5, 99.5, 100.0, 2.0);
         var boxFire = BoxStep(boxEng, 6, 100.5, 101.25, 100.0, 101.0, 2.0); // bar 7: breaks up, arms

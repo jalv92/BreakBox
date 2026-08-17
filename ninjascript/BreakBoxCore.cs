@@ -732,20 +732,6 @@ namespace BreakBoxCore
             return s / _st.SealedFilled;
         }
 
-        // The cold-start seam. The shell replays box ranges from the §10 history
-        // file at DataLoaded so day 1 is not a dead day. Pure: it takes a number,
-        // never a file — the I/O lives in BreakBoxStrategy.cs.
-        public void SeedSealedRange(double range)
-        {
-            if (range <= 0.0 || double.IsNaN(range))
-                return;
-            _st.SealedRanges[_st.SealedIdx] = range;
-            _st.SealedIdx = (_st.SealedIdx + 1) % _st.SealedRanges.Length;
-            if (_st.SealedFilled < _st.SealedRanges.Length)
-                _st.SealedFilled++;
-            _st.SealedCount++;
-        }
-
         #endregion
 
         private static string F(double v)

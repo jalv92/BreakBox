@@ -312,7 +312,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ShowBox = true;
                 ShowLevels = true;
                 ShowPanel = true;
-                ShowHud = true;
             }
             else if (State == State.Configure)
             {
@@ -477,9 +476,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             // `q = BaseQuantity * _uiRiskMult`, scaling size without touching
             // an entry, exit or gate. Both are still listed here and dropped
             // by Canonical's Excluded array, so the exclusion reads as a
-            // decision, not an oversight. The four Visuals toggles (ShowBox /
-            // ShowLevels / ShowPanel / ShowHud) never reach a trading decision
-            // at all and are not listed anywhere.
+            // decision, not an oversight. The three Visuals toggles (ShowBox /
+            // ShowLevels / ShowPanel) never reach a trading decision at all and
+            // are not listed anywhere.
             _cfgHash = BbHistory.Hash(BbHistory.Canonical(new List<string>
             {
                 "risk=" + _uiRiskMult.ToString("0.##", CultureInfo.InvariantCulture),
@@ -1670,10 +1669,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Show panel", Order = 3, GroupName = "07. Visuals")]
         public bool ShowPanel { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show HUD", Order = 4, GroupName = "07. Visuals")]
-        public bool ShowHud { get; set; }
 
         #endregion
     }
