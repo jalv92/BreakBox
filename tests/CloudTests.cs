@@ -11,7 +11,7 @@ public static class CloudTests
     {
         WarmupBlocks();
         RegimeLatchSurvivesTheDeepPullback();
-        PullbackLimitMode();
+        PullbackBaseMode();
         RegimeClearsThreeWays();
         TokenMintAndElseIf();
         TokenKills();
@@ -34,73 +34,104 @@ public static class CloudTests
         return new BbBar { Time = Tm(i), Open = o, High = h, Low = l, Close = c, Volume = 100 };
     }
 
-    // The alternative entry: rest a LIMIT on the far ribbon edge the moment the
-    // token qualifies, instead of a STOP above whatever bar reclaimed it. A
-    // measured run put the breakout fill 65 points above the pullback low because
-    // the reclaim bar was 2.5 ATR tall.
-    private static void PullbackLimitMode()
+    // The entry level. Anchoring the stop to the reclaim BAR lets a tall bar carry
+    // it away: a measured 2.5 ATR candle put the fill 65 points above the pullback
+    // low. Base mode anchors it to the ceiling of the basing action instead, which
+    // is armed BEFORE the impulse bar rather than above it.
+    private static void PullbackBaseMode()
     {
-        T.Section("Cloud — the pullback LIMIT entry (§5.2 step 6, alternative)");
+        T.Section("Cloud — the stop sits on the PULLBACK BASE (§5.2 step 6)");
 
         var cfg = Cfg();
-        cfg.PullbackLimitEntry = true;
+        cfg.PullbackBaseEntry = true;
         cfg.MinPullback = 1;
         cfg.MinBarsBetween = 0;
         var st = new BbCloudState();
         var eng = new BbCloud(cfg, st);
         int i = Uptrend(eng, 0, 10, 100.0, 4.0);
 
-        Pull(eng, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);       // low touches eS
+        // Mint: the low touches eS. The base starts at THIS bar's high.
+        eng.OnBar(Bar(i, 107.50, 107.75, 106.50, 107.00), Secs(Tm(i)),
+                  106.50, 107.00, 105.00, 4.0, true, true, false);
         T.Check(st.Armed, "the touch mints the token");
-        T.CheckClose(st.Ext, 106.6, "ext is the touch bar's low");
+        T.CheckClose(st.Ext, 106.50, "ext is the touch bar's low");
+        T.CheckClose(st.Base, 107.75, "base is the touch bar's high");
 
-        // This bar would FAIL the reclaim gate — it closes below eF — and its low
-        // is ABOVE the token's extreme, so the two candidate stop levels differ.
-        var a = Pull(eng, i + 1, 105.5, 107.4, 107.2, 106.7, 106.8, 4.0);
-        T.Check(a.Fire, "the limit fires with no gold candle to qualify");
-        T.Check(a.IsLimit, "and it is a LIMIT, not a stop");
-        T.CheckClose(a.TriggerPx, 107.5, "it rests on eS, the same edge the touch test uses");
+        // A basing bar: no new low, and it CLOSES BELOW eF so the reclaim gate
+        // would refuse it. Base mode has no reclaim to pass.
+        var a = eng.OnBar(Bar(i + 1, 107.00, 107.25, 106.75, 106.75), Secs(Tm(i + 1)),
+                          107.25, 107.25, 105.50, 4.0, true, true, false);
+        T.CheckClose(st.Base, 107.75, "a lower high does not lower the base");
+        T.Check(a.Fire, "the break arms with no gold candle to qualify");
+        T.Check(!a.IsLimit, "it is a STOP, not a limit — the trade is always a break");
+        T.CheckClose(a.TriggerPx, 108.00, "one tick beyond the base, not beyond this bar");
+        T.Check(a.TriggerPx > 107.25, "and therefore above the market, never through it");
         T.CheckInt(a.Dir, 1, "long, from the latched regime");
-        T.CheckClose(a.SignalBarLow, 106.6, "the stop is priced off the PULLBACK extreme, not this bar's low");
+        T.CheckClose(a.SignalBarLow, 106.50, "the protective stop is priced off the PULLBACK extreme");
 
-        // The mode is the whole difference: the identical sequence in breakout
-        // mode is refused by the reclaim gate.
+        // A NEW extreme means the basing had not begun: the base restarts from the
+        // bar that made it, instead of keeping a ceiling from higher up the leg.
+        var cfg2 = Cfg();
+        cfg2.PullbackBaseEntry = true;
+        cfg2.MinPullback = 1;
+        cfg2.MinBarsBetween = 0;
+        var st2 = new BbCloudState();
+        var eng2 = new BbCloud(cfg2, st2);
+        int j = Uptrend(eng2, 0, 10, 100.0, 4.0);
+        eng2.OnBar(Bar(j, 107.50, 107.75, 106.50, 107.00), Secs(Tm(j)),
+                   106.50, 107.00, 105.00, 4.0, true, true, false);
+        var a2 = eng2.OnBar(Bar(j + 1, 106.50, 106.75, 106.00, 106.25), Secs(Tm(j + 1)),
+                            107.25, 107.25, 105.50, 4.0, true, true, false);
+        T.CheckClose(st2.Ext, 106.00, "the deeper low becomes the extreme");
+        T.CheckClose(st2.Base, 106.75, "and the base RESETS to that bar's high, not 107.75");
+        T.CheckClose(a2.TriggerPx, 107.00, "so the break arms just above the turn");
+
+        // Retiring the token clears the base with the extreme.
+        eng2.OnEntryFilled();
+        T.Check(double.IsNaN(st2.Base), "a fill clears the base as well as the ext");
+
+        // The mode is the whole difference: the same bar in reclaim mode is refused.
         var cfgB = Cfg();
         cfgB.MinPullback = 1;
         cfgB.MinBarsBetween = 0;
         var stB = new BbCloudState();
         var engB = new BbCloud(cfgB, stB);
-        int j = Uptrend(engB, 0, 10, 100.0, 4.0);
-        Pull(engB, j, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
-        var b = Pull(engB, j + 1, 105.5, 107.4, 107.2, 106.7, 106.8, 4.0);
-        T.Check(!b.Fire, "breakout mode refuses the same bar");
+        int k = Uptrend(engB, 0, 10, 100.0, 4.0);
+        engB.OnBar(Bar(k, 107.50, 107.75, 106.50, 107.00), Secs(Tm(k)),
+                   106.50, 107.00, 105.00, 4.0, true, true, false);
+        var b = engB.OnBar(Bar(k + 1, 107.00, 107.25, 106.75, 106.75), Secs(Tm(k + 1)),
+                           107.25, 107.25, 105.50, 4.0, true, true, false);
+        T.Check(!b.Fire, "reclaim mode refuses the same bar");
         T.Check(stB.Gate.Block == "reclaim", "and names the reclaim gate as the blocker");
 
-        // Both vetoes still bind in limit mode.
+        // Both final vetoes still bind in base mode.
         var cfgC = Cfg();
-        cfgC.PullbackLimitEntry = true;
+        cfgC.PullbackBaseEntry = true;
         cfgC.MinPullback = 1;
         cfgC.MinBarsBetween = 0;
         cfgC.AllowLong = false;
         var stC = new BbCloudState();
         var engC = new BbCloud(cfgC, stC);
-        int k = Uptrend(engC, 0, 10, 100.0, 4.0);
-        Pull(engC, k, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
-        var c2 = Pull(engC, k + 1, 105.5, 107.4, 107.2, 106.7, 106.8, 4.0);
-        T.Check(!c2.Fire, "a disabled direction still refuses a limit entry");
+        int m = Uptrend(engC, 0, 10, 100.0, 4.0);
+        engC.OnBar(Bar(m, 107.50, 107.75, 106.50, 107.00), Secs(Tm(m)),
+                   106.50, 107.00, 105.00, 4.0, true, true, false);
+        var c2 = engC.OnBar(Bar(m + 1, 107.00, 107.25, 106.75, 106.75), Secs(Tm(m + 1)),
+                            107.25, 107.25, 105.50, 4.0, true, true, false);
+        T.Check(!c2.Fire, "a disabled direction still refuses the break");
         T.Check(stC.Gate.Block == "direction off", "and says so");
 
         var cfgD = Cfg();
-        cfgD.PullbackLimitEntry = true;
+        cfgD.PullbackBaseEntry = true;
         cfgD.MinPullback = 1;
         cfgD.MinBarsBetween = 0;
         var stD = new BbCloudState();
         var engD = new BbCloud(cfgD, stD);
-        int m = Uptrend(engD, 0, 10, 100.0, 4.0);
-        Pull(engD, m, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
-        var d = engD.OnBar(Bar(m + 1, 107.3, 107.5, 106.7, 106.8), Secs(Tm(m + 1)),
-                           107.2, 107.4, 105.5, 4.0, true, false, false);
-        T.Check(!d.Fire, "auto-trade off still refuses a limit entry");
+        int n = Uptrend(engD, 0, 10, 100.0, 4.0);
+        engD.OnBar(Bar(n, 107.50, 107.75, 106.50, 107.00), Secs(Tm(n)),
+                   106.50, 107.00, 105.00, 4.0, true, true, false);
+        var d = engD.OnBar(Bar(n + 1, 107.00, 107.25, 106.75, 106.75), Secs(Tm(n + 1)),
+                           107.25, 107.25, 105.50, 4.0, true, false, false);
+        T.Check(!d.Fire, "auto-trade off still refuses the break");
         T.Check(stD.Gate.Block == "auto-trade", "and reports it at its own rung");
     }
 
@@ -116,7 +147,7 @@ public static class CloudTests
         // reclaim bar. The engine's default is now the pullback limit, so the mode
         // is stated here rather than inherited — a default flip must not silently
         // retarget the tests that measure the other path.
-        c.PullbackLimitEntry = false;
+        c.PullbackBaseEntry = false;
         return c;
     }
 
@@ -416,7 +447,7 @@ public static class CloudTests
         c.TrendSlopeAtr = 0.15;
         c.RegimeMemory = 30;
         c.PullbackMax = 20;
-        c.PullbackLimitEntry = false;       // these sections measure the bar gates
+        c.PullbackBaseEntry = false;       // these sections measure the bar gates
         c.MinPullback = 1;
         c.MinBarsBetween = 6;
         c.CloseInRange = 0.60;

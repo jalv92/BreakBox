@@ -46,14 +46,20 @@ namespace BreakBoxCore
                                                 // suffix apart is how a seconds value ends up in
                                                 // a bars field.
         public int TriggerOffsetTicks = 1;
-        // Where the entry sits. false = the v2 breakout: a STOP beyond the reclaim
-        // bar's extreme. true = a LIMIT resting on the far ribbon edge as soon as
-        // the token qualifies, so the fill is inside the pullback instead of on
-        // top of whatever impulse bar reclaimed it — a 2.5 ATR reclaim bar put a
-        // measured entry 65 points above the pullback low. The trade-off is real
-        // and unmeasured: better price and a tighter R, no confirmation, and it
-        // fills on pullbacks that keep going.
-        public bool PullbackLimitEntry = true;
+        // Where the STOP sits. Both modes are stop entries — the trade is always
+        // a break in our direction, never a bid inside the pullback.
+        //
+        // false = beyond the RECLAIM BAR's extreme. Anchoring to one bar means a
+        //   tall bar carries the entry with it: a measured 2.5 ATR reclaim candle
+        //   put the fill 65 points above the pullback low.
+        // true  = beyond the PULLBACK BASE — the ceiling of the basing action at
+        //   the bottom of the pullback (State.Base). That is the level whose break
+        //   says the pullback is over, it does not grow with one bar's height, and
+        //   it is armed before the impulse bar rather than above it.
+        //
+        // A LIMIT on the far ribbon edge was tried and removed: it rested below
+        // the market and a 66-point resumption left it unfilled.
+        public bool PullbackBaseEntry = true;
         public bool AllowLong = true;
         public bool AllowShort = true;
 
@@ -73,6 +79,12 @@ namespace BreakBoxCore
 
         public bool Armed;                      // a pullback token is live
         public double Ext = double.NaN;         // NaN = no token. 0.0 is a price.
+        // The ceiling (long) / floor (short) of the basing action since Ext was
+        // last set — the level a resumption has to break. Same NaN discipline as
+        // Ext, and by construction never inside the current bar: step 3 keeps it
+        // at or beyond that bar's own extreme, so a stop placed past it can never
+        // be submitted through the market.
+        public double Base = double.NaN;
         public int AgeBars;
         public int BarsSinceLastArm;
         public int TriggerArmedBars;
@@ -196,6 +208,7 @@ namespace BreakBoxCore
                 _st.Armed = true;
                 _st.AgeBars = 0;                            // the touch bar can never fire (§2)
                 _st.Ext = dir > 0 ? bar.Low : bar.High;     // ASSIGNED, never folded into a stale ext
+                _st.Base = dir > 0 ? bar.High : bar.Low;    // the ceiling to break, from this bar on
                 _killWhy = "";
             }
             else if (_st.Armed)
@@ -204,7 +217,15 @@ namespace BreakBoxCore
                 // not reset the clock, or price riding the ribbon defeats
                 // PullbackMax forever and the token fires into a dead move.
                 _st.AgeBars++;
-                _st.Ext = dir > 0 ? Math.Min(_st.Ext, bar.Low) : Math.Max(_st.Ext, bar.High);
+                double ext = dir > 0 ? Math.Min(_st.Ext, bar.Low) : Math.Max(_st.Ext, bar.High);
+                // A NEW extreme means the basing has not begun yet, so the base
+                // restarts from this bar instead of carrying a stale ceiling from
+                // higher up the pullback — which would arm the break far above the
+                // action that actually turned.
+                _st.Base = ext != _st.Ext
+                    ? (dir > 0 ? bar.High : bar.Low)
+                    : (dir > 0 ? Math.Max(_st.Base, bar.High) : Math.Min(_st.Base, bar.Low));
+                _st.Ext = ext;
             }
 
             // Step 4 — kill. Armed always implies a real ext (KillToken is the
@@ -259,13 +280,13 @@ namespace BreakBoxCore
                 return a;
             }
 
-            // ---- Step 5 (§5.2), the bar gates. In PullbackLimitEntry mode there
-            // is no reclaim bar to qualify — the trade IS the pullback — so the
-            // four bar gates (reclaim, close-in-range, bar range, leg) never run
+            // ---- Step 5 (§5.2), the bar gates. In PullbackBaseEntry mode there is
+            // no reclaim bar to qualify — the break of the base IS the trigger — so
+            // the four bar gates (reclaim, close-in-range, bar range, leg) never run
             // and their ladder rungs read "not evaluated", which is exactly what
-            // they are. The two vetoes below this point, canTrade and the
-            // direction toggles, apply to BOTH modes.
-            if (!_cfg.PullbackLimitEntry && !GoldCandle(bar, _st.RegimeLatched, eF, atr))
+            // they are. The two vetoes below this point, canTrade and the direction
+            // toggles, apply to BOTH modes.
+            if (!_cfg.PullbackBaseEntry && !GoldCandle(bar, _st.RegimeLatched, eF, atr))
                 return a;                       // GoldCandle wrote the ladder
 
             // Every real gate has passed — this bar would fire. `canTrade` is
@@ -306,16 +327,20 @@ namespace BreakBoxCore
             // measurement cannot tell "at the high" from "high + 1 tick".
             // `dir` was already bound to _st.RegimeLatched back at step 3.
             double tick = _cfg.TickSize;
-            bool limitMode = _cfg.PullbackLimitEntry;
-            // Breakout: beyond the reclaim bar's extreme. Pullback limit: ON eS,
-            // the far ribbon edge — the SAME value the token's touch test uses at
-            // step 3, so the level we rest on can never disagree with the level
-            // that minted the token.
-            double trig = limitMode
-                ? BbMath.RoundToTick(eS, tick)
-                : (dir > 0
-                    ? BbMath.RoundToTick(bar.High + _cfg.TriggerOffsetTicks * tick, tick)
-                    : BbMath.RoundToTick(bar.Low - _cfg.TriggerOffsetTicks * tick, tick));
+            bool baseMode = _cfg.PullbackBaseEntry;
+            // The level to break. In base mode that is State.Base, which step 3
+            // keeps at or beyond this bar's own extreme — so the stop is always
+            // above the market for a long and below it for a short, and can never
+            // be refused as submitted through the market. NaN cannot reach here
+            // (Armed implies both Ext and Base are real), but a NaN trigger would
+            // pass every comparison in the shell's guard and reach the platform,
+            // so it falls back rather than trusting the invariant.
+            double level = baseMode && !double.IsNaN(_st.Base)
+                ? _st.Base
+                : (dir > 0 ? bar.High : bar.Low);
+            double trig = dir > 0
+                ? BbMath.RoundToTick(level + _cfg.TriggerOffsetTicks * tick, tick)
+                : BbMath.RoundToTick(level - _cfg.TriggerOffsetTicks * tick, tick);
 
             _st.Gate.Clear();
             _st.TriggerArmedBars = 0;
@@ -324,14 +349,14 @@ namespace BreakBoxCore
             a.Dir = dir;
             a.Engine = BbEntryEngine.Cloud;
             a.TriggerPx = trig;
-            a.IsLimit = limitMode;
-            // These price the stop (BbStopInputs.SignalBar*). Entering AT the
-            // pullback means the structure worth sitting behind is the PULLBACK's
-            // extreme, not this bar's: _st.Ext is the deepest point the token has
-            // reached, so the stop clears the whole pullback instead of hugging
-            // one bar inside it.
-            a.SignalBarHigh = limitMode && dir < 0 ? Math.Max(bar.High, _st.Ext) : bar.High;
-            a.SignalBarLow = limitMode && dir > 0 ? Math.Min(bar.Low, _st.Ext) : bar.Low;
+            a.IsLimit = false;                  // both modes are stop entries
+            // These price the protective stop (BbStopInputs.SignalBar*). Breaking
+            // out of the BASE means the structure worth sitting behind is the
+            // pullback's own extreme, not this bar's: _st.Ext is the deepest point
+            // the token reached, so the stop clears the whole pullback instead of
+            // hugging one bar inside it.
+            a.SignalBarHigh = baseMode && dir < 0 ? Math.Max(bar.High, _st.Ext) : bar.High;
+            a.SignalBarLow = baseMode && dir > 0 ? Math.Min(bar.Low, _st.Ext) : bar.Low;
             // §4.1: there is no box behind a cloud action, and a stale box id
             // would render on the panel as if there were.
             a.BoxHigh = 0.0;
@@ -482,6 +507,7 @@ namespace BreakBoxCore
             // it. Every comparison against NaN is false, so a resurrected token
             // fails closed instead of firing.
             _st.Ext = double.NaN;
+            _st.Base = double.NaN;
             _st.AgeBars = 0;
             _st.TriggerArmedBars = 0;
             _killWhy = why;
@@ -496,6 +522,7 @@ namespace BreakBoxCore
         {
             _st.Armed = false;
             _st.Ext = double.NaN;
+            _st.Base = double.NaN;
             _st.AgeBars = 0;
             _st.BarsSinceLastArm = 0;
             _st.TriggerArmedBars = 0;
