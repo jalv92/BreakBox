@@ -262,6 +262,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RegimeMemorySec = 900;
                 PullbackMaxSec = 600;
                 MinPullbackSec = 30;
+                CloudPullbackLimit = true;
                 CloseInRange = 0.60;
                 MinBarRangeAtr = 0.20;
                 MinLegAtr = 0.35;
@@ -464,6 +465,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _cloudCfg.MinBarsBetween = BbScale.Bars(MinBarsBetweenSec, _barSec, 1);
             _cloudCfg.TriggerLife = BbScale.Bars(TriggerLifeSec, _barSec, 1);
             _cloudCfg.TriggerOffsetTicks = TriggerOffsetTicks;
+            _cloudCfg.PullbackLimitEntry = CloudPullbackLimit;
             _cloudCfg.AllowLong = _uiLongOn;
             _cloudCfg.AllowShort = _uiShortOn;
 
@@ -528,6 +530,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "regmem=" + RegimeMemorySec.ToString(CultureInfo.InvariantCulture),
                 "pbmax=" + PullbackMaxSec.ToString(CultureInfo.InvariantCulture),
                 "pbmin=" + MinPullbackSec.ToString(CultureInfo.InvariantCulture),
+                "cloudlimit=" + (CloudPullbackLimit ? "1" : "0"),
                 "cir=" + CloseInRange.ToString("0.###", CultureInfo.InvariantCulture),
                 "minbrange=" + MinBarRangeAtr.ToString("0.###", CultureInfo.InvariantCulture),
                 "minleg=" + MinLegAtr.ToString("0.###", CultureInfo.InvariantCulture),
@@ -1667,6 +1670,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(0, 3600)]
         [Display(Name = "Cloud: min pullback (sec)", Description = "G — the touch bar itself can never fire; this is the floor above it", Order = 19, GroupName = "03. Engines")]
         public int MinPullbackSec { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Cloud: limit on the pullback", Description = "G — true: a LIMIT rests on the far ribbon edge as soon as the token qualifies. false: the v2 STOP beyond the reclaim bar's high. It is in the config digest, so the cfg view separates the two curves", Order = 26, GroupName = "03. Engines")]
+        public bool CloudPullbackLimit { get; set; }
 
         [NinjaScriptProperty, Range(0.0, 1.0)]
         [Display(Name = "Cloud: close in range", Description = "C — 0.60. Both reference signal candles were wickless (1.00)", Order = 20, GroupName = "03. Engines")]

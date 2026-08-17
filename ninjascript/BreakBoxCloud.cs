@@ -46,6 +46,14 @@ namespace BreakBoxCore
                                                 // suffix apart is how a seconds value ends up in
                                                 // a bars field.
         public int TriggerOffsetTicks = 1;
+        // Where the entry sits. false = the v2 breakout: a STOP beyond the reclaim
+        // bar's extreme. true = a LIMIT resting on the far ribbon edge as soon as
+        // the token qualifies, so the fill is inside the pullback instead of on
+        // top of whatever impulse bar reclaimed it — a 2.5 ATR reclaim bar put a
+        // measured entry 65 points above the pullback low. The trade-off is real
+        // and unmeasured: better price and a tighter R, no confirmation, and it
+        // fills on pullbacks that keep going.
+        public bool PullbackLimitEntry = true;
         public bool AllowLong = true;
         public bool AllowShort = true;
 
@@ -251,8 +259,13 @@ namespace BreakBoxCore
                 return a;
             }
 
-            // ---- Step 5 (§5.2), the bar gates.
-            if (!GoldCandle(bar, _st.RegimeLatched, eF, atr))
+            // ---- Step 5 (§5.2), the bar gates. In PullbackLimitEntry mode there
+            // is no reclaim bar to qualify — the trade IS the pullback — so the
+            // four bar gates (reclaim, close-in-range, bar range, leg) never run
+            // and their ladder rungs read "not evaluated", which is exactly what
+            // they are. The two vetoes below this point, canTrade and the
+            // direction toggles, apply to BOTH modes.
+            if (!_cfg.PullbackLimitEntry && !GoldCandle(bar, _st.RegimeLatched, eF, atr))
                 return a;                       // GoldCandle wrote the ladder
 
             // Every real gate has passed — this bar would fire. `canTrade` is
@@ -293,9 +306,16 @@ namespace BreakBoxCore
             // measurement cannot tell "at the high" from "high + 1 tick".
             // `dir` was already bound to _st.RegimeLatched back at step 3.
             double tick = _cfg.TickSize;
-            double trig = dir > 0
-                ? BbMath.RoundToTick(bar.High + _cfg.TriggerOffsetTicks * tick, tick)
-                : BbMath.RoundToTick(bar.Low - _cfg.TriggerOffsetTicks * tick, tick);
+            bool limitMode = _cfg.PullbackLimitEntry;
+            // Breakout: beyond the reclaim bar's extreme. Pullback limit: ON eS,
+            // the far ribbon edge — the SAME value the token's touch test uses at
+            // step 3, so the level we rest on can never disagree with the level
+            // that minted the token.
+            double trig = limitMode
+                ? BbMath.RoundToTick(eS, tick)
+                : (dir > 0
+                    ? BbMath.RoundToTick(bar.High + _cfg.TriggerOffsetTicks * tick, tick)
+                    : BbMath.RoundToTick(bar.Low - _cfg.TriggerOffsetTicks * tick, tick));
 
             _st.Gate.Clear();
             _st.TriggerArmedBars = 0;
@@ -304,9 +324,14 @@ namespace BreakBoxCore
             a.Dir = dir;
             a.Engine = BbEntryEngine.Cloud;
             a.TriggerPx = trig;
-            a.IsLimit = false;
-            a.SignalBarHigh = bar.High;
-            a.SignalBarLow = bar.Low;
+            a.IsLimit = limitMode;
+            // These price the stop (BbStopInputs.SignalBar*). Entering AT the
+            // pullback means the structure worth sitting behind is the PULLBACK's
+            // extreme, not this bar's: _st.Ext is the deepest point the token has
+            // reached, so the stop clears the whole pullback instead of hugging
+            // one bar inside it.
+            a.SignalBarHigh = limitMode && dir < 0 ? Math.Max(bar.High, _st.Ext) : bar.High;
+            a.SignalBarLow = limitMode && dir > 0 ? Math.Min(bar.Low, _st.Ext) : bar.Low;
             // §4.1: there is no box behind a cloud action, and a stale box id
             // would render on the panel as if there were.
             a.BoxHigh = 0.0;
