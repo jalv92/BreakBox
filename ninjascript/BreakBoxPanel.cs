@@ -37,18 +37,41 @@ namespace NinjaTrader.NinjaScript.Strategies
     {
         #region Panel fields
 
-        private Grid _panelRoot;
-        private TextBlock _statusText, _atrText, _windowText, _hudPnl, _hudTrades, _hudBox;
-        private Button _autoBtn, _breakBtn, _buyBtn, _sellBtn, _lockBtn;
-        private readonly Button[] _riskBtns = new Button[3];
-        private readonly Button[] _slBtns = new Button[5];
-        private static readonly double[] RiskLevels = { 0.5, 1.0, 1.5 };
-        private static readonly string[] SlNames = { "Candle", "Swing", "MA", "E50", "Man" };
+        // 300 DIP, docked left, full height. v1 was an auto-sized Grid of
+        // horizontal StackPanels: width was max(row), height was sum(row), and
+        // the result was an 830x480 landscape slab where no two rows lined up.
+        // The fixed width is what makes "every row is the same 2-column grid"
+        // mean anything.
+        private const double PanelWidth = 300;
+
+        private DockPanel _panelRoot;
+        private StackPanel _body;
+        private TextBlock _statusDot, _statusText, _instText;
+        private Button _autoBtn, _lockBtn;
 
         private static readonly Brush OnBrush = new SolidColorBrush(Color.FromRgb(0x00, 0xC8, 0xFF));
-        private static readonly Brush OffBrush = new SolidColorBrush(Color.FromRgb(0x50, 0x50, 0x50));
+        private static readonly Brush OffBrush = new SolidColorBrush(Color.FromRgb(0x30, 0x36, 0x40));
         private static readonly Brush TextBrush = Brushes.White;
-        private static readonly Brush PanelBg = new SolidColorBrush(Color.FromArgb(0xD0, 0x14, 0x18, 0x20));
+        private static readonly Brush PanelBg = new SolidColorBrush(Color.FromArgb(0xE8, 0x0F, 0x13, 0x1A));
+        private static readonly Brush HeaderBg = new SolidColorBrush(Color.FromArgb(0xFF, 0x08, 0x0B, 0x10));
+        private static readonly Brush DimBrush = new SolidColorBrush(Color.FromRgb(0x6A, 0x72, 0x7E));
+        private static readonly Brush OkBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xC3, 0x8C));
+        private static readonly Brush WarnBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xA0, 0x30));
+        private static readonly Brush LossBrush = new SolidColorBrush(Color.FromRgb(0xD9, 0x53, 0x4F));
+        private static readonly Brush RuleBrush = new SolidColorBrush(Color.FromRgb(0x1C, 0x22, 0x2C));
+
+        // Frozen because the static initialiser runs on whichever thread
+        // touches the class first — normally NinjaScript's — and these are then
+        // assigned to Foreground on the WPF thread. An unfrozen Freezable used
+        // across dispatchers throws "The calling thread cannot access this
+        // object", and it throws intermittently, which is the worst way to find
+        // out about it.
+        static BreakBoxStrategy()
+        {
+            Brush[] all = { OnBrush, OffBrush, PanelBg, HeaderBg, DimBrush, OkBrush, WarnBrush, LossBrush, RuleBrush };
+            for (int i = 0; i < all.Length; i++)
+                all[i].Freeze();
+        }
 
         #endregion
 
@@ -59,135 +82,49 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!ShowPanel || ChartControl == null)
                 return;
 
+            // Read off the STRATEGY thread and capture: Instrument and
+            // BarSeconds() belong to NinjaScript, and reaching for them from
+            // inside the dispatcher lambda is a cross-thread read that works
+            // right up until it does not.
+            string instLabel = (Instrument != null ? Instrument.FullName : "--")
+                             + "  ·  " + BarSeconds() + "s";
+
             ChartControl.Dispatcher.InvokeAsync(new Action(() =>
             {
                 if (_panelRoot != null && UserControlCollection.Contains(_panelRoot))
                     return;
 
-                _panelRoot = new Grid
+                _panelRoot = new DockPanel
                 {
+                    Width = PanelWidth,
                     HorizontalAlignment = HorizontalAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Top,
-                    Margin = new Thickness(8),
+                    VerticalAlignment = VerticalAlignment.Stretch,
+                    LastChildFill = true,
                     Background = PanelBg
                 };
 
-                var rows = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+                // Header and action bar dock FIRST, the ScrollViewer last. In a
+                // DockPanel the last child fills what is left, and that is the
+                // only arrangement in which a long gate ladder scrolls instead
+                // of pushing FLATTEN off the bottom of the chart.
+                UIElement header = BuildHeader(instLabel);
+                DockPanel.SetDock(header, Dock.Top);
+                _panelRoot.Children.Add(header);
 
-                // --- Row: AUTO-TRADE + status
-                var head = Row();
-                _autoBtn = Toggle("AUTO-TRADE", _uiAutoTrade, delegate
+                UIElement actions = BuildActionBar();
+                DockPanel.SetDock(actions, Dock.Bottom);
+                _panelRoot.Children.Add(actions);
+
+                _body = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
+
+                ScrollViewer scroll = new ScrollViewer
                 {
-                    _uiAutoTrade = !_uiAutoTrade;
-                    Paint(_autoBtn, _uiAutoTrade);
-                });
-                head.Children.Add(_autoBtn);
-                _statusText = Label("READY");
-                head.Children.Add(_statusText);
-                rows.Children.Add(head);
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    Content = _body
+                };
+                _panelRoot.Children.Add(scroll);
 
-                // --- Row: the two entry engines, independently toggled
-                var engines = Row();
-                engines.Children.Add(Label("Engine"));
-                _breakBtn = Toggle("Break", _uiBreakOn, delegate
-                {
-                    _uiBreakOn = !_uiBreakOn;
-                    Paint(_breakBtn, _uiBreakOn);
-                    BuildConfigs();
-                });
-                engines.Children.Add(_breakBtn);
-                rows.Children.Add(engines);
-
-                // --- Row: direction gates
-                var dirs = Row();
-                dirs.Children.Add(Label("Side"));
-                _buyBtn = Toggle("Buy", _uiLongOn, delegate
-                {
-                    _uiLongOn = !_uiLongOn;
-                    Paint(_buyBtn, _uiLongOn);
-                    BuildConfigs();
-                });
-                _sellBtn = Toggle("Sell", _uiShortOn, delegate
-                {
-                    _uiShortOn = !_uiShortOn;
-                    Paint(_sellBtn, _uiShortOn);
-                    BuildConfigs();
-                });
-                dirs.Children.Add(_buyBtn);
-                dirs.Children.Add(_sellBtn);
-                rows.Children.Add(dirs);
-
-                // --- Row: risk multiplier
-                var risk = Row();
-                risk.Children.Add(Label("Risk"));
-                for (int i = 0; i < RiskLevels.Length; i++)
-                {
-                    int idx = i;
-                    _riskBtns[i] = Toggle(RiskLevels[i].ToString("0.#", CultureInfo.InvariantCulture) + "x",
-                        Math.Abs(_uiRiskMult - RiskLevels[i]) < 1e-9, delegate
-                        {
-                            _uiRiskMult = RiskLevels[idx];
-                            for (int k = 0; k < _riskBtns.Length; k++)
-                                Paint(_riskBtns[k], k == idx);
-                        });
-                    risk.Children.Add(_riskBtns[i]);
-                }
-                rows.Children.Add(risk);
-
-                // --- Row: the five stop sources
-                var sl = Row();
-                sl.Children.Add(Label("SL"));
-                for (int i = 0; i < SlNames.Length; i++)
-                {
-                    int idx = i;
-                    _slBtns[i] = Toggle(SlNames[i], (int)_uiStopSource == i, delegate
-                    {
-                        _uiStopSource = (BbStopSource)idx;
-                        for (int k = 0; k < _slBtns.Length; k++)
-                            Paint(_slBtns[k], k == idx);
-                        BuildConfigs();
-                    });
-                    sl.Children.Add(_slBtns[i]);
-                }
-                rows.Children.Add(sl);
-
-                // --- Row: the order-touching actions. All four go through the
-                // TriggerCustomEvent bridge; see the file header.
-                var acts = Row();
-                acts.Children.Add(Action_("Flatten", delegate { Dispatch(o => FlattenAll("panel")); }));
-                acts.Children.Add(Action_("BE", delegate { Dispatch(o => PanelBreakeven()); }));
-                _lockBtn = Toggle("Lock Out", _lockout, delegate
-                {
-                    Dispatch(o => PanelToggleLockout());
-                });
-                acts.Children.Add(_lockBtn);
-                rows.Children.Add(acts);
-
-                var manual = Row();
-                manual.Children.Add(Action_("Manual Buy", delegate { Dispatch(o => PanelManualEntry(+1)); }));
-                manual.Children.Add(Action_("Manual Sell", delegate { Dispatch(o => PanelManualEntry(-1)); }));
-                rows.Children.Add(manual);
-
-                // --- Readouts
-                var read = Row();
-                _atrText = Label("ATR: --");
-                _windowText = Label("Window: --");
-                read.Children.Add(_atrText);
-                read.Children.Add(_windowText);
-                rows.Children.Add(read);
-
-                if (ShowHud)
-                {
-                    rows.Children.Add(Divider());
-                    _hudPnl = Label("Daily P&L: --");
-                    _hudTrades = Label("Trades: --");
-                    _hudBox = Label("Box: --");
-                    rows.Children.Add(_hudPnl);
-                    rows.Children.Add(_hudTrades);
-                    rows.Children.Add(_hudBox);
-                }
-
-                _panelRoot.Children.Add(rows);
                 UserControlCollection.Add(_panelRoot);
             }));
         }
@@ -208,9 +145,47 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Widgets
 
-        private static StackPanel Row()
+        // EVERY row in the body is this: label left on a star column, value
+        // right on an auto column. v1's rows were horizontal StackPanels, so
+        // each one was as wide as its own content and nothing lined up with
+        // anything — that is the whole of the "messy rectangle".
+        private static Grid Row2(UIElement left, UIElement right)
         {
-            return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+            Grid g = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            if (left != null) { Grid.SetColumn(left, 0); g.Children.Add(left); }
+            if (right != null) { Grid.SetColumn(right, 1); g.Children.Add(right); }
+            return g;
+        }
+
+        // Equal-width columns, for the button strips. The action bar is the one
+        // place where the 2-column rule would look wrong: three equal buttons
+        // beat two wide ones and a stub.
+        private static Grid Cols(params UIElement[] cells)
+        {
+            Grid g = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+            for (int i = 0; i < cells.Length; i++)
+            {
+                g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                if (cells[i] == null)
+                    continue;
+                Grid.SetColumn(cells[i], i);
+                g.Children.Add(cells[i]);
+            }
+            return g;
+        }
+
+        private static TextBlock Section(string title)
+        {
+            return new TextBlock
+            {
+                Text = title,
+                Foreground = DimBrush,
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 10, 0, 3)
+            };
         }
 
         private static TextBlock Label(string text)
@@ -219,30 +194,33 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 Text = text,
                 Foreground = TextBrush,
-                Margin = new Thickness(4, 4, 6, 2),
                 FontSize = 11,
+                TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center
             };
         }
 
-        private static Border Divider()
+        private static TextBlock Small(string text)
         {
-            return new Border
-            {
-                Height = 1,
-                Background = OffBrush,
-                Margin = new Thickness(2, 4, 2, 4)
-            };
+            TextBlock t = Label(text);
+            t.Foreground = DimBrush;
+            t.FontSize = 10;
+            return t;
+        }
+
+        private static Border Rule()
+        {
+            return new Border { Height = 1, Background = RuleBrush, Margin = new Thickness(0, 6, 0, 0) };
         }
 
         private static Button Toggle(string text, bool on, System.Windows.RoutedEventHandler onClick)
         {
-            var b = new Button
+            Button b = new Button
             {
                 Content = text,
-                Margin = new Thickness(2),
-                Padding = new Thickness(6, 2, 6, 2),
-                FontSize = 11,
+                Margin = new Thickness(1),
+                Padding = new Thickness(4, 2, 4, 2),
+                FontSize = 10,
                 Foreground = TextBrush,
                 Background = on ? OnBrush : OffBrush,
                 BorderThickness = new Thickness(0)
@@ -253,12 +231,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private static Button Action_(string text, System.Windows.RoutedEventHandler onClick)
         {
-            var b = new Button
+            Button b = new Button
             {
                 Content = text,
-                Margin = new Thickness(2),
-                Padding = new Thickness(8, 2, 8, 2),
-                FontSize = 11,
+                Margin = new Thickness(1),
+                Padding = new Thickness(4, 5, 4, 5),
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
                 Foreground = Brushes.Black,
                 Background = Brushes.Gainsboro,
                 BorderThickness = new Thickness(0)
@@ -271,6 +250,74 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (b != null)
                 b.Background = on ? OnBrush : OffBrush;
+        }
+
+        #endregion
+
+        #region Chrome
+
+        private UIElement BuildHeader(string instLabel)
+        {
+            Border b = new Border { Background = HeaderBg, Padding = new Thickness(10, 8, 10, 8) };
+            StackPanel s = new StackPanel();
+
+            TextBlock title = new TextBlock
+            {
+                Text = "BREAKBOX",
+                Foreground = TextBrush,
+                FontSize = 13,
+                FontWeight = FontWeights.Bold
+            };
+            _instText = Small(instLabel);
+            s.Children.Add(Row2(title, _instText));
+
+            StackPanel st = new StackPanel { Orientation = Orientation.Horizontal };
+            // A text bullet, not an Ellipse: NinjaTrader.NinjaScript.DrawingTools
+            // also declares Ellipse, and check.sh hoists every file's usings into
+            // ONE compilation unit — so the WPF shape and the drawing tool become
+            // an ambiguous reference (CS0104) in the combined build only.
+            _statusDot = new TextBlock
+            {
+                Text = "●",
+                Foreground = DimBrush,
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            _statusText = Label("WARMING");
+            st.Children.Add(_statusDot);
+            st.Children.Add(_statusText);
+
+            _autoBtn = Toggle("AUTO-TRADE", _uiAutoTrade, delegate
+            {
+                _uiAutoTrade = !_uiAutoTrade;
+                Paint(_autoBtn, _uiAutoTrade);
+            });
+            s.Children.Add(Row2(st, _autoBtn));
+
+            b.Child = s;
+            return b;
+        }
+
+        private UIElement BuildActionBar()
+        {
+            Border b = new Border { Background = HeaderBg, Padding = new Thickness(9, 6, 9, 9) };
+            StackPanel s = new StackPanel();
+
+            _lockBtn = Toggle("LOCK OUT", _lockout, delegate { Dispatch(o => PanelToggleLockout()); });
+            _lockBtn.Padding = new Thickness(4, 5, 4, 5);
+            _lockBtn.FontWeight = FontWeights.Bold;
+
+            s.Children.Add(Cols(
+                Action_("FLATTEN", delegate { Dispatch(o => FlattenAll("panel")); }),
+                Action_("BE", delegate { Dispatch(o => PanelBreakeven()); }),
+                _lockBtn));
+            s.Children.Add(Cols(
+                Action_("MANUAL BUY", delegate { Dispatch(o => PanelManualEntry(+1)); }),
+                Action_("MANUAL SELL", delegate { Dispatch(o => PanelManualEntry(-1)); })));
+
+            b.Child = s;
+            return b;
         }
 
         #endregion
@@ -363,6 +410,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Readouts
 
+        // ponytail: this is an interim patch, not the section's real shape. Task
+        // 64 replaced the fields this used to read (_atrText/_windowText/_hudBox
+        // etc. are gone with v1's HUD row) and Task 69 ("one batched dispatcher
+        // update per bar") is the task that rebuilds this into FillStatus /
+        // FillGates / FillHistory / ApplySnap over a single PanelSnap. Until
+        // then this only drives what Task 64 actually built: the status text
+        // and the header dot, so the dot is not a dead decoration.
         private void UpdatePanelStatus()
         {
             if (_panelRoot == null || ChartControl == null)
@@ -373,55 +427,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                           : _entryPending ? "WORKING"
                           : !_atr.IsWarm ? "WARMING"
                           : _uiAutoTrade ? "READY" : "MANUAL";
-
-            string atr = "ATR: " + (_atr.IsWarm ? _atr.Value.ToString("0.00", CultureInfo.InvariantCulture) : "--");
-
-            // Countdown to the flatten time, in the session's own clock.
-            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
-            int flat = BbMath.HhmmToSecs(FlattenHhmm);
-            int left = flat - secs;
-            if (left < 0) left += 24 * 3600;
-            string window = string.Format(CultureInfo.InvariantCulture, "Window: {0:00}:{1:00} ({2}h {3}m)",
-                                          FlattenHhmm / 100, FlattenHhmm % 100, left / 3600, (left % 3600) / 60);
-
-            var box = _engine != null ? _engine.Box : null;
-            string boxText = box == null
-                ? "Box: --"
-                : string.Format(CultureInfo.InvariantCulture, "Box #{0}: {1} / {2}{3}",
-                                box.Id, box.High, box.Low, box.Valid ? "" : "  (out of band)");
+            bool ready = !_lockout && _atr.IsWarm && _uiAutoTrade && !_inTrade && !_entryPending;
 
             ChartControl.Dispatcher.InvokeAsync(new Action(() =>
             {
                 if (_statusText != null) _statusText.Text = status;
-                if (_atrText != null) _atrText.Text = atr;
-                if (_windowText != null) _windowText.Text = window;
-                if (_hudBox != null) _hudBox.Text = boxText;
+                if (_statusDot != null) _statusDot.Foreground = _lockout ? LossBrush : (ready ? OkBrush : DimBrush);
             }));
         }
 
+        // ponytail: no-op. v1's daily P&L / trade-count HUD lost its TextBlocks
+        // in Task 64's chrome rewrite; the replacement is the HISTORY section
+        // (Task 68) plus Task 69's FillHistory, neither of which is this task's
+        // job. Kept as a stub so the two OnBarUpdate call sites still compile —
+        // Task 69 deletes both when UpdatePanelStatus becomes the only per-bar
+        // panel entry point.
         private void UpdateHud()
         {
-            if (!ShowHud || _panelRoot == null || ChartControl == null)
-                return;
-
-            double cum = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
-            double day = double.IsNaN(_dayStartCum) ? 0.0 : cum - _dayStartCum;
-
-            int n = _winsToday + _lossesToday;
-            string wr = n > 0 ? (100.0 * _winsToday / n).ToString("0", CultureInfo.InvariantCulture) + "%" : "--";
-            string pnl = "Daily P&L: " + day.ToString("C2", CultureInfo.CurrentCulture);
-            string trades = string.Format(CultureInfo.InvariantCulture,
-                "Trades: {0}   W:{1} L:{2} ({3})", _tradesToday, _winsToday, _lossesToday, wr);
-
-            ChartControl.Dispatcher.InvokeAsync(new Action(() =>
-            {
-                if (_hudPnl != null)
-                {
-                    _hudPnl.Text = pnl;
-                    _hudPnl.Foreground = day > 0 ? Brushes.LimeGreen : (day < 0 ? Brushes.OrangeRed : TextBrush);
-                }
-                if (_hudTrades != null) _hudTrades.Text = trades;
-            }));
         }
 
         #endregion
