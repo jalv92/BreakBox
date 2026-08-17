@@ -12,6 +12,8 @@ public static class CloudTests
         WarmupBlocks();
         RegimeLatchSurvivesTheDeepPullback();
         RegimeClearsThreeWays();
+        TokenMintAndElseIf();
+        TokenKills();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -73,9 +75,16 @@ public static class CloudTests
             Up(eng, i, 100.0 + 0.5 * i, 4.0);
         T.Check(st.Gate.Block == "warmup", "an unfilled slope ring is still warmup");
 
-        // Sixth push fills a 6-slot ring, so the warmup gate clears.
+        // Sixth push fills a 6-slot ring, so the warmup gate clears. This same
+        // bar also latches the regime (its slope trivially clears TrendSlopeAtr).
+        // With no pullback token armed yet, the ladder now falls through to the
+        // token gate (Task 22) rather than reporting empty — an empty Block here
+        // would be exactly the "READY next to (out of band)" defect §9.1 warns
+        // about, now that a real downstream blocker exists to name.
         Up(eng, 6, 103.0, 4.0);
-        T.Check(string.IsNullOrEmpty(st.Gate.Block), "a full ring clears the warmup block");
+        T.Check(st.Gate.Block != "warmup", "a full ring clears the warmup block");
+        T.CheckInt(st.RegimeLatched, +1, "and the same bar latches the regime");
+        T.Check(st.Gate.Block == "token", "so the ladder now reports the real next blocker, not empty");
 
         // The ring is pushed BEFORE the warmup return. Gate the push behind the
         // gate and it never fills, so warmup never clears — a deadlock that
@@ -167,5 +176,91 @@ public static class CloudTests
         Pull(eng3, i + 3, 105.0, 107.0, 106.5, 106.8, 106.0, 4.0);
         T.CheckInt(st3.RegimeLatched, 0, "age > RegimeMemory clears it");
         T.Check(st3.Gate.Block == "regime" && st3.Gate.GateDepth == 1, "and the ladder says regime at depth 1");
+    }
+
+    private static void TokenMintAndElseIf()
+    {
+        T.Section("Cloud — token mint, and the three things the else-if buys");
+
+        var cfg = Cfg();
+        var st = new BbCloudState();
+        var eng = new BbCloud(cfg, st);
+        int i = Uptrend(eng, 0, 10, 100.0, 4.0);
+
+        // (a) the touch bar itself. eS = 107.0, low 106.6 touches it.
+        Pull(eng, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
+        T.Check(st.Armed, "a touch of the FAR edge mints the token");
+        T.CheckInt(st.AgeBars, 0, "the touch bar has AgeBars == 0 — §2: never on the touch");
+        T.CheckClose(st.Ext, 106.6, "ext is the touch bar's low");
+
+        // (c) a re-touch DEEPENS ext but does NOT reset the clock. Without the
+        // else-if, price riding the ribbon resets AgeBars forever and defeats
+        // PullbackMax — the token never ages out and fires days later.
+        Pull(eng, i + 1, 105.5, 107.5, 106.5, 107.2, 107.4, 4.0);
+        T.CheckInt(st.AgeBars, 1, "a non-touch bar ages the token");
+        Pull(eng, i + 2, 106.0, 108.0, 107.0, 106.1, 107.6, 4.0);
+        T.CheckInt(st.AgeBars, 2, "a RE-touch ages it too — it does not reset the clock");
+        T.CheckClose(st.Ext, 106.1, "and the re-touch deepens ext");
+
+        // (b) ext is ASSIGNED on mint, never min()-ed into a stale value. Kill
+        // this token, then mint a HIGHER one: a fold would leave 106.1 behind and
+        // gate (e)'s leg would be measured from a price this pullback never saw.
+        Pull(eng, i + 3, 106.0, 108.0, 107.0, 105.0, 105.5, 4.0);   // close < eT -> kill
+        T.Check(!st.Armed, "closing through eT killed it");
+        int j = Uptrend(eng, i + 4, 10, 110.0, 4.0);                 // re-latch long
+        Pull(eng, j, 114.5, 116.5, 116.0, 116.2, 116.4, 4.0);
+        T.Check(st.Armed, "a new touch mints a new token");
+        T.CheckClose(st.Ext, 116.2, "ext is ASSIGNED, not min()-ed into the dead token's 106.1");
+    }
+
+    private static void TokenKills()
+    {
+        T.Section("Cloud — the token kills (§5.2 step 4)");
+
+        // (1) close through eT against the latch.
+        var st1 = new BbCloudState();
+        var eng1 = new BbCloud(Cfg(), st1);
+        int i = Uptrend(eng1, 0, 10, 100.0, 4.0);
+        Pull(eng1, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
+        T.Check(st1.Armed, "armed");
+        Pull(eng1, i + 1, 105.0, 107.0, 106.5, 104.0, 104.5, 4.0);
+        T.Check(!st1.Armed, "a close through eT kills the token");
+        T.Check(double.IsNaN(st1.Ext), "and ext goes NaN — 0.0 would pass gate (e) as a real price");
+        // These exact bar values are RegimeClearsThreeWays' clear-#2 fixture:
+        // "closed through eT against the latch" is the SAME predicate UpdateRegime
+        // tests, and it runs before step 3/4 — so this bar clears the regime one
+        // step earlier in the same OnBar call and the ladder reports the
+        // shallower "regime" gate, not "token". The token is still provably dead
+        // (both asserts above), just filed under the more fundamental reason.
+        T.Check(st1.Gate.Block == "regime" && st1.Gate.GateDepth == 1, "the ladder says regime at depth 1, not an unreachable token/2");
+
+        // (2) AgeBars > PullbackMax.
+        var cfg2 = Cfg();
+        cfg2.PullbackMax = 3;
+        var st2 = new BbCloudState();
+        var eng2 = new BbCloud(cfg2, st2);
+        i = Uptrend(eng2, 0, 10, 100.0, 4.0);
+        Pull(eng2, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
+        for (int k = 1; k <= 3; k++)
+            Pull(eng2, i + k, 105.0, 107.0, 106.5, 107.4, 107.6, 4.0);
+        T.Check(st2.Armed, "still armed at exactly PullbackMax");
+        Pull(eng2, i + 4, 105.0, 107.0, 106.5, 107.4, 107.6, 4.0);
+        T.Check(!st2.Armed && double.IsNaN(st2.Ext), "AgeBars > PullbackMax kills it");
+
+        // (3) the latch FLIPPING sign. A long token in a short regime would fire
+        // the wrong way with an ext that is a low.
+        var st3 = new BbCloudState();
+        var eng3 = new BbCloud(Cfg(), st3);
+        i = Uptrend(eng3, 0, 10, 100.0, 4.0);
+        Pull(eng3, i, 105.0, 107.0, 106.5, 106.6, 106.9, 4.0);
+        T.Check(st3.Armed, "armed long");
+        for (int k = 0; k < 8; k++)
+        {
+            double eT = 104.5 - 0.5 * k, eS = eT - 2.0, eF = eS - 2.0, c = eF - 2.0;
+            eng3.OnBar(Bar(i + 1 + k, c + 1.0, eS - 1.0, c - 0.5, c), Secs(Tm(i + 1 + k)),
+                       eF, eS, eT, 4.0, true, true, false);
+        }
+        T.CheckInt(st3.RegimeLatched, -1, "the latch flipped");
+        T.Check(!st3.Armed && double.IsNaN(st3.Ext), "and the flip killed the long token");
     }
 }

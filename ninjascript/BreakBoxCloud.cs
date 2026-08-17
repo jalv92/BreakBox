@@ -146,7 +146,54 @@ namespace BreakBoxCore
             UpdateRegime(bar, eF, eS, eT, atr);
             if (_st.RegimeLatched == 0)
             {
+                KillToken("regime lost");
                 _st.Gate.Set("regime", "flat — need close/ribbon/slope aligned", 1);
+                return a;
+            }
+
+            int dir = _st.RegimeLatched;
+
+            // Step 3 — mint the token. A PHYSICAL touch of the FAR cloud edge is
+            // the only thing that mints one, and that is the answer to "why does
+            // it not fire every bar in a trend": a runaway that never comes back
+            // to eS produces exactly ONE trade. Unlike v1's box latch — whose
+            // clearing condition was near-impossible, which is why the engine was
+            // mute — this condition is ordinary and recurrent. It throttles
+            // without muting.
+            bool touched = dir > 0 ? bar.Low <= eS : bar.High >= eS;
+            if (!_st.Armed && touched)
+            {
+                _st.Armed = true;
+                _st.AgeBars = 0;                            // the touch bar can never fire (§2)
+                _st.Ext = dir > 0 ? bar.Low : bar.High;     // ASSIGNED, never folded into a stale ext
+                _killWhy = "";
+            }
+            else if (_st.Armed)
+            {
+                // The else-if is load-bearing: a RE-touch deepens ext but must
+                // not reset the clock, or price riding the ribbon defeats
+                // PullbackMax forever and the token fires into a dead move.
+                _st.AgeBars++;
+                _st.Ext = dir > 0 ? Math.Min(_st.Ext, bar.Low) : Math.Max(_st.Ext, bar.High);
+            }
+
+            // Step 4 — kill. Armed always implies a real ext (KillToken is the
+            // only writer of NaN and it disarms in the same breath), so the
+            // Min/Max above can never fold into NaN.
+            if (_st.Armed)
+            {
+                bool through = dir > 0 ? bar.Close < eT : bar.Close > eT;
+                if (through)
+                    KillToken("closed through E50");        // the reference's deepest pullback never did
+                else if (_st.AgeBars > _cfg.PullbackMax)
+                    KillToken("pullback too old");
+            }
+
+            if (!_st.Armed)
+            {
+                _st.Gate.Set("token", _killWhy.Length == 0
+                             ? "no token — waiting for a touch of the far ribbon edge"
+                             : "no token — " + _killWhy, 2);
                 return a;
             }
 
@@ -172,6 +219,11 @@ namespace BreakBoxCore
 
             if (now != 0)
             {
+                // A long token in a short regime would fire the wrong way with an
+                // ext that is a low. Kill BEFORE the latch is overwritten, while
+                // the old direction is still readable.
+                if (_st.RegimeLatched != 0 && now != _st.RegimeLatched)
+                    KillToken("regime flipped");
                 _st.RegimeLatched = now;
                 _st.RegimeLatchedAgeBars = 0;
                 return;
@@ -192,6 +244,20 @@ namespace BreakBoxCore
         {
             _st.RegimeLatched = 0;
             _st.RegimeLatchedAgeBars = 0;
+        }
+
+        private void KillToken(string why)
+        {
+            if (!_st.Armed && double.IsNaN(_st.Ext))
+                return;                                     // nothing to kill; keep the older reason
+            _st.Armed = false;
+            // NaN, not 0.0: 0.0 is a price, and gate (e) would measure a leg from
+            // it. Every comparison against NaN is false, so a resurrected token
+            // fails closed instead of firing.
+            _st.Ext = double.NaN;
+            _st.AgeBars = 0;
+            _st.TriggerArmedBars = 0;
+            _killWhy = why;
         }
 
         #region Slope ring
