@@ -88,6 +88,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         // distant context and is NOT this object (spec §1).
         private static readonly Brush BoxBrush = Brushes.White;
 
+        // Markers come from the history FILE (spec §10), never from execution
+        // events. No coupling to a running strategy: this works on a chart with
+        // nothing attached, and on last week's session.
+        private readonly List<BbTradeRecord> _history = new List<BbTradeRecord>();
+        private int _histIdx;
+        private DateTime _firstBarTime = DateTime.MinValue;
+
+        private static readonly Brush EntryBrush = Brushes.DodgerBlue;    // blue up-arrow, per §2.2
+        private static readonly Brush ExitBrush = Brushes.Magenta;        // magenta down-arrow
+
         #endregion
 
         #region Lifecycle
@@ -161,6 +171,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 _boxSt = new BbEngineState();
                 _boxEngine = new BbEngine(_boxCfg, _boxSt);
+
+                LoadHistory();
 
                 Print(string.Format(CultureInfo.InvariantCulture,
                     "BreakBoxVision: bar = {0}s -> ribbon {1}/{2}, trend {3} bars. "
@@ -264,6 +276,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < 1)
                 return;
 
+            if (_firstBarTime == DateTime.MinValue)
+                _firstBarTime = Time[0];
+
             BbBar bar = ToBar();
 
             // Update FIRST, exactly like the engine's step 0 (spec §5.2): every
@@ -305,6 +320,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             PaintCloud();
             PaintSignalBar(bar);
             PaintBox();
+            DrawMarkers(Time[0]);
         }
 
         private BbBar ToBar()
@@ -415,6 +431,87 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawTag(Draw.Rectangle(this, "bbv_box_" + box.Id, false,
                                    box.SealedAt, box.Low, Time[0], box.High,
                                    BoxBrush, BoxBrush, 6));
+        }
+
+        // Reads every history file for this instrument — live and -replay, all
+        // accounts. Vision does not know which account the strategy ran on, and
+        // asking for one dial per file name is a worse trade than showing them
+        // all: an unexpected marker is a question, a missing one is silence.
+        private void LoadHistory()
+        {
+            _history.Clear();
+            _histIdx = 0;
+
+            string dir = Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "BreakBox");
+            if (!Directory.Exists(dir))
+            {
+                Print("BreakBoxVision: no history directory at " + dir + " — no markers to draw.");
+                return;
+            }
+
+            // BbHistory.FileName keys the instrument segment off Instrument.FullName
+            // (e.g. "MNQ 12-25", spaces -> underscores) — NOT MasterInstrument.Name
+            // ("MNQ", no contract month). Globbing on MasterInstrument.Name matches
+            // nothing the strategy ever writes, so this mirrors FileName's own
+            // cleaning instead of re-deriving a different, wrong prefix.
+            string insName = Instrument != null ? Instrument.FullName : "";
+            string pattern = "history-" + insName.Replace(' ', '_') + "-*.jsonl";
+            string[] files = Directory.GetFiles(dir, pattern);
+            if (files.Length == 0)
+            {
+                Print("BreakBoxVision: no file matched " + pattern + " in " + dir + " — no markers to draw.");
+                return;
+            }
+
+            for (int f = 0; f < files.Length; f++)
+            {
+                string[] lines;
+                try
+                {
+                    lines = File.ReadAllLines(files[f]);
+                }
+                catch (IOException ex)
+                {
+                    // The strategy appends to this file while we read it. A
+                    // locked file costs markers, never the indicator.
+                    Print("BreakBoxVision: could not read " + files[f] + " (" + ex.Message + ")");
+                    continue;
+                }
+
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    BbTradeRecord r;
+                    if (BbHistory.TryParse(lines[i], out r))
+                        _history.Add(r);
+                }
+            }
+
+            // Files are appended in time order, but there are several of them.
+            _history.Sort(delegate (BbTradeRecord a, BbTradeRecord b) { return a.Ts.CompareTo(b.Ts); });
+            Print("BreakBoxVision: " + _history.Count + " history rows from " + files.Length + " file(s).");
+        }
+
+        // Drains every record up to this bar's close and marks it. Trades older
+        // than the loaded chart are DISCARDED, not stacked on bar 0 — a pile of
+        // forty arrows on the leftmost bar is worse than no arrows at all.
+        //
+        // The record carries one timestamp, so the exit arrow lands on the
+        // ENTRY's bar. On the reference's 30-60 second holds that is the same
+        // bar column anyway (spec §2); on a long hold it will be visibly wrong,
+        // and that is the honest failure for a record that has no exit time.
+        private void DrawMarkers(DateTime barTime)
+        {
+            while (_histIdx < _history.Count && _history[_histIdx].Ts <= barTime)
+            {
+                BbTradeRecord r = _history[_histIdx++];
+                if (r.Ts < _firstBarTime)
+                    continue;
+
+                string id = r.Ts.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + "_" + (_tagSeq++);
+                DrawTag(Draw.ArrowUp(this, "bbv_in_" + id, false, 0, r.Entry, EntryBrush));
+                if (r.Exit > 0.0)
+                    DrawTag(Draw.ArrowDown(this, "bbv_out_" + id, false, 0, r.Exit, ExitBrush));
+            }
         }
 
         // Same tag-ring discipline as the strategy (BreakBoxStrategy.cs's own
