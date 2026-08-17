@@ -190,6 +190,22 @@ namespace BreakBoxCore
             return Clamp((v - lo) / (hi - lo), 0.0, 1.0);
         }
 
+        // Where in its own range did this bar CLOSE, seen from `dir`? 1.00 is a
+        // wickless close on the extreme — which is what BOTH reference signal
+        // candles read (spec §2) — and 0.00 closes on the wrong end.
+        //
+        // NaN on a zero-range bar, deliberately. Every comparison against NaN is
+        // false, so a flat bar FAILS the gate instead of passing it on a 0/0;
+        // the alternative is that a halted tape prints the best-looking signal
+        // candle of the session.
+        public static double CloseInRange(BbBar bar, int dir)
+        {
+            double range = bar.High - bar.Low;
+            if (range <= 0.0)
+                return double.NaN;
+            return dir > 0 ? (bar.Close - bar.Low) / range : (bar.High - bar.Close) / range;
+        }
+
         // ET seconds-of-day from an HHMM integer. 930 -> 34200. Used by every
         // window parameter on the panel and in the strategy.
         public static int HhmmToSecs(int hhmm)

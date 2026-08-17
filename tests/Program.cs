@@ -47,8 +47,8 @@ public static class Program
         BoxTests.Run();
         BracketTests.Run();
         ShellTests.Run();
-        // Phase 4 inserts HistoryTests.Run() after this line; Phase 5 inserts
-        // VisionTests.Run() after that. Insert, never replace.
+        VisionTests.Run();
+        // Phase 4 inserts HistoryTests.Run() after this line. Insert, never replace.
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
             ? "ALL PASS (" + T.Checks + " checks)"
