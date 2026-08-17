@@ -49,6 +49,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private WilderAtr _atr;
         private Ema _eF, _eS, _eT;
         private BbCloudConfig _cloudCfg;
+        private BbCloudState _cloudSt;
+        private BbCloud _cloud;
+        private BbAction _lastAction;
         private int _barSec = BbScale.FallbackSeconds;
 
         // The ETH open, ET. Not a parameter: it anchors the trading day for the
@@ -102,6 +105,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _eF = new Ema(_cloudCfg.RibbonFast);
                 _eS = new Ema(_cloudCfg.RibbonSlow);
                 _eT = new Ema(_cloudCfg.TrendLine);
+
+                // Vision's own state object. NOT the strategy's — nothing is
+                // shared, nothing is read across processes, and the two are
+                // expected to agree only because their dials were set to agree.
+                // SlopeBuf is sized by BbCloud's own constructor (it checks
+                // null-or-wrong-length itself, for the panel-toggle rebuild
+                // case) — sizing it here too would just be a second place to
+                // keep in sync with TrendSlopeLookback for no benefit.
+                _cloudSt = new BbCloudState();
+                _cloud = new BbCloud(_cloudCfg, _cloudSt);
 
                 Print(string.Format(CultureInfo.InvariantCulture,
                     "BreakBoxVision: bar = {0}s -> ribbon {1}/{2}, trend {3} bars. "
@@ -203,6 +216,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             Values[0][0] = _eF.Value;
             Values[1][0] = _eS.Value;
             Values[2][0] = _eT.Value;
+
+            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
+
+            // canTrade = true, positioned = false, ALWAYS. Vision has no
+            // lockout, no window and no position, and hiding triggers behind a
+            // simulated governor is how a calibration view starts explaining
+            // away the very bars you are trying to count.
+            _lastAction = _cloud.OnBar(bar, secs, _eF.Value, _eS.Value, _eT.Value,
+                                       _atr.Value, _atr.IsWarm, true, false);
+
+            // Assume every trigger filled. Vision has no order layer, so the
+            // alternative is a token that stays minted forever and a chart that
+            // paints a gold candle on every subsequent bar of the same pullback.
+            if (_lastAction.Fire)
+                _cloud.OnEntryFilled();
         }
 
         private BbBar ToBar()
