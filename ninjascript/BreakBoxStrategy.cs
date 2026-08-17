@@ -96,8 +96,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private BbEngine _engine;
         private BbBracket _bracket;
 
+        private BbCloudConfig _cloudCfg;
+        private BbCloudState _cloudState;
+        private BbCloud _cloud;
+
         private WilderAtr _atr;
         private Ema _ma, _e50;
+        // The ribbon. Built ONCE at DataLoaded from the CONVERTED periods: a
+        // panel toggle rebuilds the config (BuildConfigs), and an Ema rebuilt
+        // with it would be cold — an engine that stops trading for half an
+        // hour because somebody clicked a button.
+        private Ema _emaFast, _emaSlow, _emaTrend;
         private SwingDetector _swings;
         private double _lastSwingHigh = double.NaN, _lastSwingLow = double.NaN;
 
@@ -146,6 +155,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // They start as the parameter values and diverge only when a human
         // clicks something.
         private bool _uiAutoTrade = true;
+        private bool _uiCloudOn;
         private bool _uiBreakOn, _uiRetraceOn, _uiLongOn, _uiShortOn;
         private double _uiRiskMult = 1.0;
         private BbStopSource _uiStopSource;
@@ -204,6 +214,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RetraceMaxBars = 30;
                 RetraceOffsetTicks = 0;
 
+                // ---- Cloud (§5.4). M rows are measurements off the reference
+                // chart at 30s; G rows are honest guesses, and §13 step 3 tunes
+                // at most THREE of them. TriggerLifeSec is seeded above, not
+                // here — it is shared with the Break engine.
+                EnableCloud = true;
+                RibbonFastSec = 300;
+                RibbonSlowSec = 690;
+                TrendLineSec = 1560;
+                TrendSlopeSec = 300;
+                TrendSlopeAtr = 0.15;
+                RegimeMemorySec = 900;
+                PullbackMaxSec = 600;
+                MinPullbackSec = 30;
+                CloseInRange = 0.60;
+                MinBarRangeAtr = 0.20;
+                MinLegAtr = 0.35;
+                MinBarsBetweenSec = 180;
+                TriggerOffsetTicks = 1;
+
                 // ---- Stop
                 StopSourceParam = BbStopSource.Candle;
                 StopBufferTicks = 2;
@@ -254,6 +283,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 _bracket = new BbBracket();
                 _engState = new BbEngineState();
+                _cloudState = new BbCloudState();
             }
             else if (State == State.DataLoaded)
             {
@@ -261,11 +291,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print("BreakBox: bar ~ " + _barSec + "s (" + _barSecLabel + ")");
                 BuildConfigs();
                 _engine = new BbEngine(_cfg, _engState);
+                // BbCloud's constructor sizes _cloudState.SlopeBuf from
+                // _cloudCfg.TrendSlopeLookback. Nobody else may allocate it: a
+                // second allocation elsewhere is how a fixed-size ring silently
+                // under-reads a converted lookback.
+                _cloud = new BbCloud(_cloudCfg, _cloudState);
                 _atr = new WilderAtr(AtrPeriod);
                 _ma = new Ema(MaPeriod);
                 _e50 = new Ema(E50Period);
+                _emaFast = new Ema(_cloudCfg.RibbonFast);
+                _emaSlow = new Ema(_cloudCfg.RibbonSlow);
+                _emaTrend = new Ema(_cloudCfg.TrendLine);
                 _swings = new SwingDetector(SwingStrength);
 
+                _uiCloudOn = EnableCloud;
                 _uiBreakOn = EnableBreak;
                 _uiRetraceOn = EnableRetrace;
                 _uiLongOn = AllowLong;
@@ -339,6 +378,37 @@ namespace NinjaTrader.NinjaScript.Strategies
             _exitCfg.TrailAfterTp2 = TrailAfterTp2;
             _exitCfg.TrailAtrMult = TrailAtrMult;
 
+            // ---- Cloud (§5.4 -> §8). Every horizon arrives in SECONDS and is
+            // converted HERE rather than at DataLoaded, because BuildConfigs
+            // also runs on every panel toggle (Panel.cs) — a toggle that
+            // rebuilt a raw config would hand the engine a 300-BAR ribbon.
+            //
+            // The SAME config object is refilled instead of replaced: BbCloud
+            // holds a reference to it and to the state whose slope buffer was
+            // sized from it, so handing over a fresh object mid-session would
+            // re-allocate that buffer and blind the regime gate for
+            // TrendSlopeLookback bars. A panel click must not stop the engine
+            // trading for five minutes.
+            if (_cloudCfg == null)
+                _cloudCfg = new BbCloudConfig();
+            _cloudCfg.TickSize = TickSize;
+            _cloudCfg.RibbonFast = BbScale.Bars(RibbonFastSec, _barSec, 2);
+            _cloudCfg.RibbonSlow = BbScale.Bars(RibbonSlowSec, _barSec, 2);
+            _cloudCfg.TrendLine = BbScale.Bars(TrendLineSec, _barSec, 2);
+            _cloudCfg.TrendSlopeLookback = BbScale.Bars(TrendSlopeSec, _barSec, 2);
+            _cloudCfg.TrendSlopeAtr = TrendSlopeAtr;
+            _cloudCfg.RegimeMemory = BbScale.Bars(RegimeMemorySec, _barSec, 2);
+            _cloudCfg.PullbackMax = BbScale.Bars(PullbackMaxSec, _barSec, 2);
+            _cloudCfg.MinPullback = BbScale.Bars(MinPullbackSec, _barSec, 1);
+            _cloudCfg.CloseInRange = CloseInRange;
+            _cloudCfg.MinBarRangeAtr = MinBarRangeAtr;
+            _cloudCfg.MinLegAtr = MinLegAtr;
+            _cloudCfg.MinBarsBetween = BbScale.Bars(MinBarsBetweenSec, _barSec, 1);
+            _cloudCfg.TriggerLife = BbScale.Bars(TriggerLifeSec, _barSec, 1);
+            _cloudCfg.TriggerOffsetTicks = TriggerOffsetTicks;
+            _cloudCfg.AllowLong = _uiLongOn;
+            _cloudCfg.AllowShort = _uiShortOn;
+
             // The engine holds a reference to _cfg, so a rebuild has to be
             // handed over rather than left dangling on the old object.
             if (_engine != null)
@@ -406,6 +476,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             _atr.Update(bar);
             _ma.Update(bar.Close);
             _e50.Update(bar.Close);
+            // §5.2 step 0 — the ribbon absorbs THIS closed bar BEFORE any gate
+            // reads it. Under the other convention `close > eF` compares a close
+            // against an EMA that has not seen it yet, which is a materially
+            // looser reclaim test, not a rounding difference.
+            _emaFast.Update(bar.Close);
+            _emaSlow.Update(bar.Close);
+            _emaTrend.Update(bar.Close);
 
             var found = _swings.Update(bar, CurrentBar);
             for (int i = 0; i < found.Count; i++)
@@ -1038,6 +1115,62 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(0, 100)]
         [Display(Name = "Retrace: offset (ticks)", Order = 10, GroupName = "03. Engines")]
         public int RetraceOffsetTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Cloud engine", Description = "§5 — the primary engine. The reference panel reads Signal ON / Break OFF", Order = 11, GroupName = "03. Engines")]
+        public bool EnableCloud { get; set; }
+
+        [NinjaScriptProperty, Range(30, 7200)]
+        [Display(Name = "Cloud: ribbon fast (sec)", Description = "M — 300s = EMA(10) at 30s. Frozen by §13 step 3", Order = 12, GroupName = "03. Engines")]
+        public int RibbonFastSec { get; set; }
+
+        [NinjaScriptProperty, Range(30, 7200)]
+        [Display(Name = "Cloud: ribbon slow (sec)", Description = "M — 690s = EMA(23) at 30s. The token is minted on a touch of THIS edge", Order = 13, GroupName = "03. Engines")]
+        public int RibbonSlowSec { get; set; }
+
+        [NinjaScriptProperty, Range(30, 14400)]
+        [Display(Name = "Cloud: trend line (sec)", Description = "M — 1560s = EMA(52) at 30s. A close through it against the regime kills both", Order = 14, GroupName = "03. Engines")]
+        public int TrendLineSec { get; set; }
+
+        [NinjaScriptProperty, Range(30, 3600)]
+        [Display(Name = "Cloud: slope lookback (sec)", Description = "G — 300s, search 150-600", Order = 15, GroupName = "03. Engines")]
+        public int TrendSlopeSec { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 5.0)]
+        [Display(Name = "Cloud: slope (ATR per 10 bars)", Description = "G — 0.15, search 0.05-0.40. The reference cleared it by 7x", Order = 16, GroupName = "03. Engines")]
+        public double TrendSlopeAtr { get; set; }
+
+        [NinjaScriptProperty, Range(30, 14400)]
+        [Display(Name = "Cloud: regime memory (sec)", Description = "G — how long the latch outlives a zeroed instantaneous regime", Order = 17, GroupName = "03. Engines")]
+        public int RegimeMemorySec { get; set; }
+
+        [NinjaScriptProperty, Range(30, 7200)]
+        [Display(Name = "Cloud: pullback max (sec)", Description = "G — past this the touch is old news and the token dies", Order = 18, GroupName = "03. Engines")]
+        public int PullbackMaxSec { get; set; }
+
+        [NinjaScriptProperty, Range(0, 3600)]
+        [Display(Name = "Cloud: min pullback (sec)", Description = "G — the touch bar itself can never fire; this is the floor above it", Order = 19, GroupName = "03. Engines")]
+        public int MinPullbackSec { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 1.0)]
+        [Display(Name = "Cloud: close in range", Description = "C — 0.60. Both reference signal candles were wickless (1.00)", Order = 20, GroupName = "03. Engines")]
+        public double CloseInRange { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 0.30)]
+        [Display(Name = "Cloud: min bar range (ATR)", Description = "C — search 0.0-0.30 ONLY: the reference's reclaim bar was 0.30 ATR", Order = 21, GroupName = "03. Engines")]
+        public double MinBarRangeAtr { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 5.0)]
+        [Display(Name = "Cloud: min leg (ATR)", Description = "G — 0.35, search 0.20-0.80. Measured from the pullback extreme", Order = 22, GroupName = "03. Engines")]
+        public double MinLegAtr { get; set; }
+
+        [NinjaScriptProperty, Range(0, 7200)]
+        [Display(Name = "Cloud: min bars between (sec)", Description = "G — 180s. Throttles a cluster of entries inside one pullback", Order = 23, GroupName = "03. Engines")]
+        public int MinBarsBetweenSec { get; set; }
+
+        [NinjaScriptProperty, Range(0, 10)]
+        [Display(Name = "Cloud: trigger offset (ticks)", Description = "G — the evidence is ambiguous at 0 vs 1 (§2.3), default 1", Order = 25, GroupName = "03. Engines")]
+        public int TriggerOffsetTicks { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Stop source", Order = 1, GroupName = "04. Stop")]

@@ -22,6 +22,15 @@ namespace BreakBoxCore
         // seconds and BbScale converts inside BuildConfigs (§8). A config that
         // carried seconds would mean a different horizon on every chart — which
         // is v1's dimensional error (§1) wearing a new costume.
+
+        // The ribbon and the trend line. OnBar itself never reads these three —
+        // it takes eF/eS/eT as plain doubles the shell already updated (see the
+        // OnBar header) — they exist so BuildConfigs has ONE place to record
+        // what period the shell built each ribbon Ema with, instead of a second
+        // BbScale.Bars call living loose in the strategy file.
+        public int RibbonFast = 10;             // RibbonFastSec 300 @30s
+        public int RibbonSlow = 23;             // RibbonSlowSec 690 @30s
+        public int TrendLine = 52;              // TrendLineSec 1560 @30s
         public int TrendSlopeLookback = 10;     // TrendSlopeSec 300 @30s
         public double TrendSlopeAtr = 0.15;
         public int RegimeMemory = 30;           // RegimeMemorySec 900 @30s
