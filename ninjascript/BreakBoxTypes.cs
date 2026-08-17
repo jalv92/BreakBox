@@ -212,4 +212,30 @@ namespace BreakBoxCore
                 : secs >= startSecs || secs < endSecs;
         }
     }
+
+    // Seconds -> bars, and the bar-size estimate for non-time series. It lives
+    // in Types because BOTH the strategy and its config builder need it and
+    // neither may own it: the §8 contract is that no horizon is ever expressed
+    // in bars on the parameter surface, so every dial passes through here on its
+    // way in. v1 died of the opposite arrangement — a 240-MINUTE box range
+    // divided by a 14-BAR ATR — and no tuning fixes a dimensional error.
+    public static class BbScale
+    {
+        // What a non-time series falls back to when there is too little history
+        // to estimate anything. 30s is the bar size the whole model was measured
+        // on, so a wrong fallback is at least the right wrong number.
+        public const int FallbackSeconds = 30;
+        public const int MinEstimateSamples = 200;
+
+        // A horizon in seconds, on a `barSec` series, floored at `min` bars.
+        public static int Bars(int horizonSecs, int barSec, int min)
+        {
+            if (min < 1)
+                min = 1;
+            if (barSec < 1 || horizonSecs < 1)
+                return min;
+            int n = horizonSecs / barSec;
+            return n < min ? min : n;
+        }
+    }
 }
