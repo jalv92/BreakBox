@@ -190,6 +190,22 @@ namespace BreakBoxCore
             return BbMath.RoundToTick(entryPx - dir * dist, tick);
         }
 
+        // Which moving averages does the SELECTED stop source actually read?
+        // Gating every trade on the EMA(50) costs 50 bars of every session to a
+        // series `Candle` never touches (§11 B13). Candle, Swing and Manual
+        // return true because none of them reads an average: a missing swing
+        // falls back and SAYS it fell back, which beats blocking for an
+        // unbounded number of bars waiting for a pivot that may not come.
+        public static bool StopSourceWarm(BbExitConfig cfg, bool maWarm, bool e50Warm)
+        {
+            switch (cfg.StopSource)
+            {
+                case BbStopSource.Ma:    return maWarm;
+                case BbStopSource.Ema50: return e50Warm;
+                default:                 return true;
+            }
+        }
+
         // Splits `qty` across the live tiers. Extracted and public because the
         // split is the one piece of arithmetic that must agree between the
         // bracket, the panel's preview and the assert suite.

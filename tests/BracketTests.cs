@@ -22,6 +22,7 @@ public static class BracketTests
         Breakeven();
         Trail();
         DegenerateStopIsImpossible();
+        WarmupGatesOnlyWhatIsUsed();
     }
 
     private static BbExitConfig Cfg()
@@ -325,5 +326,38 @@ public static class BracketTests
         inp.SignalBarLow = 100.75;
         s = BbExits.SeedStop(cfg, +1, 101.00, 4.00, true, inp, out why);
         T.Check(Math.Abs(101.00 - s) >= 0.25, "a zero-width band still cannot produce a zero-width stop");
+    }
+
+    // §11 B13. v1 gated EVERY trade on the EMA(50) being warm, whichever stop
+    // source was selected. On 30s bars that is 25 minutes of every session paid
+    // to a series `Candle` never looks at — and the panel said WARMING without
+    // ever saying what for.
+    private static void WarmupGatesOnlyWhatIsUsed()
+    {
+        T.Section("Warmup — gate only the indicators the active config reads");
+
+        var cfg = Cfg();
+
+        cfg.StopSource = BbStopSource.Candle;
+        T.Check(BbExits.StopSourceWarm(cfg, false, false), "Candle reads no average, so it never waits");
+
+        cfg.StopSource = BbStopSource.Manual;
+        T.Check(BbExits.StopSourceWarm(cfg, false, false), "nor does Manual");
+
+        // Swing is structural too: when no pivot has been revealed yet SeedStop
+        // falls back and REPORTS manual_fallback, which is a better answer than
+        // refusing to trade for an unbounded number of bars.
+        cfg.StopSource = BbStopSource.Swing;
+        T.Check(BbExits.StopSourceWarm(cfg, false, false), "Swing reports its fallback instead of blocking");
+
+        cfg.StopSource = BbStopSource.Ema50;
+        T.Check(!BbExits.StopSourceWarm(cfg, true, false), "E50 waits for the E50");
+        T.Check(BbExits.StopSourceWarm(cfg, false, true), "and for nothing else");
+
+        // Ma means "far ribbon edge" once MaPeriod = RibbonSlow (§5.1), so it is
+        // the one the cloud engine will actually lean on.
+        cfg.StopSource = BbStopSource.Ma;
+        T.Check(!BbExits.StopSourceWarm(cfg, false, true), "Ma waits for the MA");
+        T.Check(BbExits.StopSourceWarm(cfg, true, false), "and for nothing else");
     }
 }

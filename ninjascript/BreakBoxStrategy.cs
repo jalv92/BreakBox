@@ -454,7 +454,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            bool canTrade = _uiAutoTrade && !_lockout && _atr.IsWarm && _e50.IsWarm;
+            bool canTrade = _uiAutoTrade && !_lockout && _atr.IsWarm
+                            && BbExits.StopSourceWarm(_exitCfg, _ma.IsWarm, _e50.IsWarm);
             var a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade,
                                   _inTrade || _entryPending);
 
