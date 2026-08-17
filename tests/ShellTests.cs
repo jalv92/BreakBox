@@ -15,6 +15,37 @@ public static class ShellTests
     {
         SecondsToBars();
         BarSecondsEstimate();
+        GateReport();
+    }
+
+    // §4.2. One report per engine, never shared. Its whole job is that the panel
+    // can never again print READY next to "(out of band)" — v1 displayed both
+    // and connected neither, and Javier watched a dead strategy for an hour.
+    private static void GateReport()
+    {
+        T.Section("Gate report — what blocked, and how deep");
+
+        var g = new BbGateReport();
+        T.Check(g.Block == "", "a fresh report blocks nothing");
+        T.CheckInt(g.GateDepth, -1, "and has no failing gate");
+
+        g.Set("box range", "range 275.00 = 7.2x ATR (max 6.0)", 2);
+        T.Check(g.Block == "box range", "the block is the ladder row that failed");
+        T.Check(g.BlockDetail == "range 275.00 = 7.2x ATR (max 6.0)", "the detail is what it needs vs what it has");
+        T.CheckInt(g.GateDepth, 2, "the depth dims everything after it");
+
+        // -1, not 0. The panel renders rows BEFORE GateDepth as passed, so a
+        // Clear() that left the depth at 0 would dim the whole ladder and report
+        // a healthy engine as blocked at its first gate.
+        g.Clear();
+        T.Check(g.Block == "", "Clear empties the block");
+        T.CheckInt(g.GateDepth, -1, "and returns the depth to 'no failing gate'");
+
+        // Engines write these from early returns on the hot path. A null there
+        // is a NullReferenceException inside the panel's render, one layer away
+        // from where it was caused.
+        g.Set(null, null, 0);
+        T.Check(g.Block == "" && g.BlockDetail == "", "null is stored as empty, never as null");
     }
 
     // §8: every horizon on the parameter surface is SECONDS, and this is the

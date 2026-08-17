@@ -213,6 +213,35 @@ namespace BreakBoxCore
         }
     }
 
+    // What blocked an engine on THIS bar, in the words the panel prints.
+    //
+    // One instance per engine and never shared (§4.2): two engines writing one
+    // report puts the cloud's ladder under the box's headline, which is a worse
+    // failure than no ladder at all — it reads as an explanation.
+    public sealed class BbGateReport
+    {
+        public string Block = "";           // "" when nothing blocks
+        public string BlockDetail = "";     // "range 275.00 = 7.2x ATR (max 6.0)"
+        public int GateDepth = -1;          // index of the first failing gate; -1 = none
+
+        public void Set(string block, string detail, int depth)
+        {
+            // Empty, never null: this is written from early returns on the hot
+            // path and read on the WPF thread, where a null surfaces as a
+            // NullReferenceException one layer away from what caused it.
+            Block = block ?? "";
+            BlockDetail = detail ?? "";
+            GateDepth = depth;
+        }
+
+        public void Clear()
+        {
+            Block = "";
+            BlockDetail = "";
+            GateDepth = -1;
+        }
+    }
+
     // Seconds -> bars, and the bar-size estimate for non-time series. It lives
     // in Types because BOTH the strategy and its config builder need it and
     // neither may own it: the §8 contract is that no horizon is ever expressed
