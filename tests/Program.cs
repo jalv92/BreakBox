@@ -50,7 +50,7 @@ public static class Program
         VisionTests.Run();
         CloudTests.Run();
         ArbitrationTests.Run();
-        // Phase 4 inserts HistoryTests.Run() after this line. Insert, never replace.
+        HistoryTests.Run();
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
             ? "ALL PASS (" + T.Checks + " checks)"
