@@ -669,12 +669,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 _lockout = false;
                 _lockoutWhy = "";
+                EngineLog("unlocked by hand");
             }
             else
             {
                 _lockout = true;
                 _lockoutWhy = "manual";
                 CancelWorkingEntry("lockout");
+                EngineLog("locked out: manual");
             }
             if (ChartControl != null)
                 ChartControl.Dispatcher.InvokeAsync(new Action(() => Paint(_lockBtn, _lockout)));

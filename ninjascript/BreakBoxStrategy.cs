@@ -168,6 +168,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int _barsToday;
         private bool _gateSummaryPrinted;
 
+        // ENGINE LOG dedup keys (§9.4). Compared against the STABLE ladder rung
+        // name (BbGateReport.Block), never BlockDetail — that carries bar
+        // counts and prices that change every bar, and logging THAT every bar
+        // would turn the log into exactly the scroll it exists to avoid.
+        private string _cloudLastLoggedGate = "";
+        private string _boxLastLoggedGate = "";
+
         // History (§10). The list is the panel's data source and holds EVERY
         // trade of this run, written or not: in a backtest you still want to
         // see the curve the run produced — you just must not let it touch the
@@ -712,12 +719,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // even with submissions disabled.
                 CountGate(_cloudGateCounts, _cloudState.Gate.GateDepth);
                 if (a.Fire) _cloudArmedToday++;
+                LogGateTransition("cloud", _cloudState.Gate, ref _cloudLastLoggedGate);
             }
             if (!a.Fire)
             {
                 a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade, positioned);
                 CountGate(_boxGateCounts, _engState.Gate.GateDepth);
                 if (a.Fire) _boxArmedToday++;
+                LogGateTransition("box", _engState.Gate, ref _boxLastLoggedGate);
+            }
+            else if (_uiBreakOn)
+            {
+                // §4.1 — cloud fired first, so the box never got a bar to run
+                // on this time: its ladder above is now STALE until it is
+                // evaluated again. Worth its own line, or "why did the box
+                // just go quiet" has no answer in the scrollback.
+                EngineLog("box suppressed — cloud armed this bar");
             }
 
             if (ShowBox) DrawBox();
@@ -727,7 +744,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             // positioned is the one mistake that costs real money, and it is
             // cheap to refuse twice.
             if (a.Fire && !positioned)
+            {
+                EngineLog((a.Engine == BbEntryEngine.Cloud ? "cloud" : "box") + " armed "
+                          + (a.Dir > 0 ? "long" : "short") + " @ "
+                          + a.TriggerPx.ToString("0.00", CultureInfo.InvariantCulture));
                 SubmitEntry(a);
+            }
             else if (_entryPending)
                 AgeWorkingEntry();
 
@@ -803,6 +825,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (depth >= 0 && depth < counts.Length)
                 counts[depth]++;
+        }
+
+        // ENGINE LOG — the "what changed" line for an engine's WHY NO TRADE
+        // ladder. Fires only when the blocking rung actually MOVES to a
+        // different one; a clear gate (Block == "") resets the memory but is
+        // not itself logged — that moment is the trigger-armed line at the
+        // SubmitEntry call site instead. Two engines, two independent memories:
+        // BbLogRing's own dedup is a single last-text slot, and alternating
+        // cloud/box lines into it every bar would defeat it.
+        private void LogGateTransition(string label, BbGateReport gate, ref string lastLogged)
+        {
+            string block = gate == null ? "" : gate.Block;
+            if (block == lastLogged)
+                return;
+            lastLogged = block;
+            if (block.Length > 0)
+                EngineLog(label + ": " + block);
         }
 
         private void PrintGateSummary()
@@ -912,6 +951,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (!_entryPending)
                 return;
+            EngineLog("disarm: " + why);
             _entryPending = false;
             _entryBarsWaiting = 0;
             if (_entryOrder != null && (_entryOrder.OrderState == OrderState.Working
@@ -1114,6 +1154,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _inTrade = true;
                 _entryFillPx = price;
                 _entryTime = time;
+                EngineLog("filled " + (_dir > 0 ? "long" : "short") + " " + execution.Order.Filled
+                          + " @ " + price.ToString("0.00", CultureInfo.InvariantCulture));
                 // The fill is what really spends the token/edge, and it belongs
                 // to the owner (§4.1). Routing this unconditionally to the box
                 // engine would spend the WRONG engine's memory on a cloud fill —
@@ -1321,6 +1363,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _lockout = true;
             _lockoutWhy = why;
             Print("BreakBox: LOCKED OUT (" + why + "), day P&L " + _dayPnl.ToString("C2"));
+            EngineLog("locked out: " + why);
         }
 
         #endregion
