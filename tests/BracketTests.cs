@@ -80,21 +80,27 @@ public static class BracketTests
         T.CheckInt(br.TargetQty[0] + br.TargetQty[1] + br.TargetQty[2], 7, "split covers the position");
     }
 
-    // Image (2), the two A_ trades: a 10-lot taking 7 at TP1, and a 14-lot
-    // splitting 8/6 across two tiers. Both are the SAME splitter with different
-    // percentages, which is the finding: the ratio is configurable, not fixed.
+    // Image (2), the two A_ trades: a 13-lot splitting 7/6 (re-measured, §2.1 —
+    // it was originally read as a 10-lot 7/3), and a 14-lot splitting 8/6. Both
+    // are the SAME splitter with different percentages, which is the finding:
+    // the ratio is configurable, not fixed.
     private static void FidelityImage2Splits()
     {
         T.Section("Fidelity — image (2), A_ splits");
 
         var cfg = Cfg();
         cfg.TierCount = 2;
-        cfg.Tp1Pct = 70;
         var q = new int[BbExitConfig.MAX_TIERS];
-        int tiers = BbExits.SplitTiers(cfg, 10, q);
-        T.CheckInt(tiers, 2, "10-lot, two tiers");
-        T.CheckInt(q[0], 7, "TP1 qty (observed 7 of 10)");
-        T.CheckInt(q[1], 3, "runner qty 3");
+
+        // Trade #6, re-measured (spec §2.1): THIRTEEN contracts split 7/6, not
+        // ten split 7/3. Only qty 7 at 1.25 pts of captured distance reproduces
+        // the reference HUD's exact $17.50, and the two exit labels read 7 and 6.
+        // 13 * 0.54 = 7.02, +0.5 -> 7.52, floor 7; remainder 6.
+        cfg.Tp1Pct = 54;
+        int tiers = BbExits.SplitTiers(cfg, 13, q);
+        T.CheckInt(tiers, 2, "13-lot, two tiers");
+        T.CheckInt(q[0], 7, "TP1 qty (observed 7 of 13)");
+        T.CheckInt(q[1], 6, "TP2 qty (observed 6 of 13)");
 
         cfg.Tp1Pct = 57;
         tiers = BbExits.SplitTiers(cfg, 14, q);
