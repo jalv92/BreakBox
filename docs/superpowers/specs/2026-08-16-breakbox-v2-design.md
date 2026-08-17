@@ -324,8 +324,12 @@ Consume the token (`armed = false; barsSinceLastArm = 0`) **only if the shell ac
 **Step 7 — trigger life.** `triggerArmedBars++` while a trigger is working. On
 `triggerArmedBars > TriggerLife`, cancel and **restore the token** (`armed = true`, `ext` and
 `ageBars` preserved) if `regimeLatched` still holds. The first draft burned the token on expiry,
-which is precisely the defect §11 B3 condemns in the box engine — the same rule now applies to
-both engines.
+which is precisely the defect §11 B3 condemns in the box engine — but the fix is NOT symmetric
+between the two engines. The cloud's token is a re-usable consumable (mint → spend → re-mint on the
+next touch), so restoring it on expiry costs nothing extra. The box's arm is a bounded per-edge
+BUDGET, and there the two disarm paths deliberately diverge (§6.2): expiry still SPENDS an arm — the
+market declined a live order — while only a refusal (cancelled/rejected) REFUNDS one, because that
+one we declined ourselves.
 
 **Step 8 — re-arm** otherwise requires a new touch of `eS` while `regimeLatched` holds.
 
@@ -399,15 +403,26 @@ one) ∈ [BoxValidLo, BoxValidHi]`. Dimensionless and timeframe-independent by c
 what `MinBoxRangeAtr` / `MaxBoxRangeAtr` were trying to express, and its absence is the v1 defect.
 
 **COLD START.** Until `BoxMeanSamples` boxes have sealed, the box engine is **hard-disabled** and
-says so in the gate ladder. It seeds from `BreakBoxHistory.cs` across sessions so day 1 is not
-dead. An undefined cold start is the other way to reproduce v1's silence.
+says so in the gate ladder. There is no cross-session seed — `BbTradeRecord` carries no box-range
+field, and nothing in the shell reads history back into the sealed-range ring — so every fresh
+attach warms up from scratch. At the defaults (`BoxLookback` 7 bars, `BoxMinBars` 2, `BoxMeanSamples`
+20) the first box can seal as early as bar `BoxLookback + BoxMinBars` = 9 (~4.5 minutes on a 30s
+chart) in the best case, but there is no fixed ceiling after that: a live box blocks the next
+candidate from sealing until it dies — a break or up to `BoxMaxAge` bars — so how long 20 boxes
+takes depends entirely on the tape and has never been measured against real data. The panel's own
+`BOX WARMING — n/N boxes sealed` readout is the actual clock; do not assume day 1 finishes warming.
+An undefined cold start is the other way to reproduce v1's silence.
 
 ### 6.2 Entry
 
 Break of a sealed, valid box edge, same stop-market mechanism as §5.2 step 6. **Arming does not
-spend the edge:** `BoxArmsPerEdge` arms per edge per box Id, each separated by `BoxArmCooldown`,
-the counter reset on an inside close (a close within both edges of the **sealed** box). v1's
-boolean latch meant an expired, cancelled or refused trigger burned the box without trading.
+spend the edge as a boolean latch:** `BoxArmsPerEdge` arms per edge per box Id, each separated by
+`BoxArmCooldown`, the counter reset on an inside close (a close within both edges of the **sealed**
+box). v1's single latch meant an expired, cancelled or refused trigger burned the box without
+trading. v2 replaces it with a bounded budget, and the two disarm paths deliberately do NOT collapse
+to the same rule: `OnEntryRejected` (cancelled/rejected — we refused the trade ourselves) refunds the
+spent arm, but `OnTriggerExpired` (the market declined a live order) does not — the arm stays spent.
+Pinned by `ArmingDoesNotSpendTheEdge` and `ExpirySpendsAnArmRejectionRefundsIt` in `BoxTests.cs`.
 
 Drawn as a **white rectangle**, matching the reference.
 
@@ -656,7 +671,7 @@ the first draft of this spec described defects that do not exist as stated; they
 |---|---|---|
 | B1 | `Core.cs:210` | the box guard early-returns for **every** engine — the Cloud path must live outside `BbEngine` entirely (it does, in `BreakBoxCloud.cs`) |
 | B2 | `Strategy.cs:385-391` | **corrected.** `canTrade` *is* computed before `OnBar`. The defect is that it is **not passed in**: the engine arms triggers and spends latches during warmup/lockout and the result is discarded at `:391`. Fix: pass it in, per §5.2 step 1b |
-| B3 | `Core.cs:429` | arming sets the spent latch → an expired/cancelled/refused entry burns the edge without a trade. Closed by §6.2 |
+| B3 | `Core.cs:429` | arming sets the spent latch → an expired/cancelled/refused entry burns the edge without a trade. §6.2 replaces the single latch with a bounded per-edge arm budget — a cancelled/refused entry now refunds its arm, but an expiry deliberately does not (the market declined a live order; a refusal we made ourselves does not) |
 | B4 | `Strategy.cs:461`, `:514`, `:733` | **corrected.** The reachable refusal paths are `qty < 1`, `CancelWorkingEntry`, and the `OrderState.Rejected` branch — *not* the degenerate-stop guard, which B14 shows is unreachable. Fix: one `OnEntryRejected(engine, reason)` called from all three, restoring the token / not decrementing the attempt counter |
 | B5 | `Panel.cs:96,102,115,121,155` | toggles call `BuildConfigs()` on the **WPF thread**, swapping the engine out from under `OnBarUpdate`. Route through `TriggerCustomEvent` |
 | B6 | `Core.cs:235` + `Strategy.cs:509` | **corrected.** Both clocks read the same `TriggerLifeBars = 5`; there is no 5-vs-3 disagreement. The real defect is that the engine counts `BreakArmedBars` from **arm** and the shell counts `_entryBarsWaiting` from **submit**, and neither cancels the other's object. Fix: one clock, owned by the engine (§5.2 step 7), shell mirrors |

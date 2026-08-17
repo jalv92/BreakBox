@@ -44,8 +44,15 @@ would mint a token and destroy it on the same move, every time, and trade nothin
 
 **Box** (rebuilt at the right scale): a small accumulation with a real lifecycle — form, seal,
 invalidate — whose validity is judged **against the distribution of other boxes**, not against a
-bar-count ATR. Arming spends one of a per-edge budget rather than latching a boolean, so a trigger
-that expires or is refused no longer burns the setup.
+bar-count ATR. Arming spends one of a bounded per-edge budget rather than latching a single boolean —
+a refusal (cancelled/rejected) refunds its arm because we declined the trade ourselves, but an expiry
+still spends one because the market declined a live order, and the whole budget clears on an ordinary
+inside close rather than v1's near-impossible latch condition. There is no cross-session seed: a
+fresh attach warms up from scratch — `BoxMeanSamples` boxes (20 by default) have to seal before the
+engine trades at all, which at the defaults is a lower bound of ~9 bars for the first one and no
+fixed ceiling after that (a live box blocks the next candidate until it dies, by a break or by
+`BoxMaxAge`). Unmeasured against real data; the panel's own `BOX WARMING — n/N boxes sealed` readout
+is the only real clock.
 
 **Bracket** (unchanged from v1, and the one thing v1 got right): a structural stop from five
 selectable sources clamped into an ATR band, up to three take-profit tiers priced as R-multiples,
@@ -65,7 +72,7 @@ breakeven on the first tier fill, and a chandelier trail after the second.
 | `BreakBoxVision.cs` | **indicator**, trades nothing. Deploys to `Custom/Indicators/` | no |
 
 "Pure" means zero `using NinjaTrader.*` — those files compile in a net8 test runner with no NT8
-assemblies, which is what lets **417 asserts** run headless.
+assemblies, which is what lets **435 asserts** run headless.
 
 ## 4. The four rules that carry the design
 
@@ -93,7 +100,7 @@ connected the two, which is how a dead strategy went unnoticed for an hour.
 300 DIP, docked left, full height. A `WHY NO TRADE` ladder naming the first failing gate and what it
 needs versus what it has. A three-line engine log. Controls for both engines, both directions, risk
 and stop source. And a **history chart that survives restarts** — cumulative equity over
-`today | 20d | 100t`, with every trade tagged by a digest of the 58 dials that change what is
+`today | 20d | 100t`, with every trade tagged by a digest of the 57 dials that change what is
 traded, so a parameter change renders as a visible seam instead of silently contaminating the
 record. That digest is what makes the chart answer *"is the configuration I am running now
 working?"* rather than *"has this ever made money?"*.
@@ -124,7 +131,7 @@ Gates: `[[strategy-profitability-gates]]`, out-of-sample only, **never the vendo
 scripts/check.sh
 ```
 
-Two halves, both must be clean: the pure files compile with zero NT8 assemblies and 417 asserts run;
+Two halves, both must be clean: the pure files compile with zero NT8 assemblies and 435 asserts run;
 then all NT8 files are concatenated into one compilation unit and checked with `nt8c`. `nt8c check`
 on a *single* file reports false CS0246 on every cross-file type — that is why the gate concatenates.
 
