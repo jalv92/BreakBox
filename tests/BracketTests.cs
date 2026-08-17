@@ -21,6 +21,7 @@ public static class BracketTests
         SplitEdges();
         Breakeven();
         Trail();
+        DegenerateStopIsImpossible();
     }
 
     private static BbExitConfig Cfg()
@@ -290,5 +291,39 @@ public static class BracketTests
         // Coverage accounting: two tiers filled, the runner is still covered.
         T.CheckInt(BbExits.CoveredQty(br), br.TargetQty[2], "covered qty == the runner");
         T.CheckInt(br.QtyOpen, br.TargetQty[2], "open qty agrees");
+    }
+
+    // §11 B14. The shell refused any entry whose seeded stop landed within one
+    // tick of the trigger. That cannot happen: SeedStop floors the DISTANCE at
+    // one tick (BreakBoxExits.cs:188) after the fallback and after both clamps.
+    // The guard was dead code that read like a live safety net, which is the
+    // worst kind — it answers "what protects us here?" with a lie.
+    private static void DegenerateStopIsImpossible()
+    {
+        T.Section("Stop — the degenerate-stop refusal is unreachable");
+
+        var cfg = Cfg();
+        cfg.StopSource = BbStopSource.Candle;
+        cfg.StopBufferTicks = 0;
+        cfg.ManualStopTicks = 40;
+        cfg.StopMinAtr = 0.0;
+        cfg.StopMaxAtr = 1e9;
+        string why;
+        var inp = NoStructure();
+
+        // The exact case the guard named: a wickless signal bar, so the
+        // structural stop IS the entry price.
+        inp.SignalBarLow = 101.00;
+        double s = BbExits.SeedStop(cfg, +1, 101.00, 0.0, false, inp, out why);
+        T.Check(Math.Abs(101.00 - s) >= 0.25, "a stop AT the entry never survives SeedStop");
+        T.Check(why == "manual_fallback", "a same-side structure is not usable at all, so it falls back");
+
+        // The other way to ask for a zero-width stop: collapse the ATR band onto
+        // zero and let the cap do it.
+        cfg.StopMinAtr = 0.0;
+        cfg.StopMaxAtr = 0.0;
+        inp.SignalBarLow = 100.75;
+        s = BbExits.SeedStop(cfg, +1, 101.00, 4.00, true, inp, out why);
+        T.Check(Math.Abs(101.00 - s) >= 0.25, "a zero-width band still cannot produce a zero-width stop");
     }
 }

@@ -537,18 +537,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // Refuse the trade at SUBMIT time if the stop it would get is
-            // unusable — discovering it at the fill means holding a position
-            // while deciding what to do about it.
-            var inp = StopInputs(a);
-            string why;
-            double probeStop = BbExits.SeedStop(_exitCfg, a.Dir, a.TriggerPx, _atr.Value, _atr.IsWarm, inp, out why);
-            if (Math.Abs(a.TriggerPx - probeStop) < TickSize)
-            {
-                Print("BreakBox: entry refused, degenerate stop (" + why + ")");
-                return;
-            }
-
             string sig = a.Dir > 0 ? SigLong : SigShort;
 
             // Written BEFORE the submit: NT8 can deliver the fill in-stack.
