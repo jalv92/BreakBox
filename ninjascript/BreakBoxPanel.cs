@@ -97,6 +97,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly BbLogRing _log = new BbLogRing(3);
         private readonly TextBlock[] _logText = new TextBlock[3];
 
+        // CONTROLS / SESSION (Task 67).
+        private Button _cloudBtn, _boxBtn, _buyBtn, _sellBtn;
+        private readonly Button[] _riskBtns = new Button[3];
+        private readonly Button[] _slBtns = new Button[5];
+        private static readonly double[] RiskLevels = { 0.5, 1.0, 1.5 };
+        // Five, because BbStopSource has five (§9.5). `MA` changes MEANING with
+        // MaPeriod — at RibbonSlow it is "the far ribbon edge" — which is why
+        // the SESSION block below names the active one instead of leaving the
+        // lit button to imply it.
+        private static readonly string[] SlNames = { "Cndl", "Swng", "MA", "E50", "Man" };
+        private TextBlock _sessionA, _sessionB;
+
         #endregion
 
         #region Construction
@@ -142,6 +154,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _body = new StackPanel { Margin = new Thickness(10, 6, 10, 6) };
                 _body.Children.Add(BuildGateSection());
                 _body.Children.Add(BuildLogSection());
+                _body.Children.Add(BuildControlsSection());
+                _body.Children.Add(BuildSessionSection());
 
                 ScrollViewer scroll = new ScrollViewer
                 {
@@ -397,6 +411,92 @@ namespace NinjaTrader.NinjaScript.Strategies
             return s;
         }
 
+        private UIElement BuildControlsSection()
+        {
+            StackPanel s = new StackPanel();
+            s.Children.Add(Section("CONTROLS"));
+
+            _cloudBtn = Toggle("Cloud", _uiCloudOn, delegate
+            {
+                _uiCloudOn = !_uiCloudOn;
+                Paint(_cloudBtn, _uiCloudOn);
+                Rebuild();
+            });
+            // Caption "Box", field `_uiBreakOn`. The engine is the break engine
+            // and Phase 3 names the field after its `EnableBreak` property; the
+            // box is what the user sees it draw, so that is what the button says.
+            _boxBtn = Toggle("Box", _uiBreakOn, delegate
+            {
+                _uiBreakOn = !_uiBreakOn;
+                Paint(_boxBtn, _uiBreakOn);
+                Rebuild();
+            });
+            s.Children.Add(Row2(Small("Engine"), Cols(_cloudBtn, _boxBtn)));
+
+            _buyBtn = Toggle("Buy", _uiLongOn, delegate
+            {
+                _uiLongOn = !_uiLongOn;
+                Paint(_buyBtn, _uiLongOn);
+                Rebuild();
+            });
+            _sellBtn = Toggle("Sell", _uiShortOn, delegate
+            {
+                _uiShortOn = !_uiShortOn;
+                Paint(_sellBtn, _uiShortOn);
+                Rebuild();
+            });
+            s.Children.Add(Row2(Small("Side"), Cols(_buyBtn, _sellBtn)));
+
+            UIElement[] risk = new UIElement[RiskLevels.Length];
+            for (int i = 0; i < RiskLevels.Length; i++)
+            {
+                int idx = i;
+                _riskBtns[i] = Toggle(RiskLevels[i].ToString("0.#", CultureInfo.InvariantCulture) + "x",
+                    Math.Abs(_uiRiskMult - RiskLevels[i]) < 1e-9, delegate
+                    {
+                        _uiRiskMult = RiskLevels[idx];
+                        for (int k = 0; k < _riskBtns.Length; k++)
+                            Paint(_riskBtns[k], k == idx);
+                        // NO Rebuild(): risk scales size, not the decision, and
+                        // it is excluded from the config hash for the same
+                        // reason (§10). Rebuilding here would be harmless and
+                        // misleading.
+                    });
+                risk[i] = _riskBtns[i];
+            }
+            s.Children.Add(Row2(Small("Risk"), Cols(risk)));
+
+            UIElement[] sl = new UIElement[SlNames.Length];
+            for (int i = 0; i < SlNames.Length; i++)
+            {
+                int idx = i;
+                _slBtns[i] = Toggle(SlNames[i], (int)_uiStopSource == i, delegate
+                {
+                    _uiStopSource = (BbStopSource)idx;
+                    for (int k = 0; k < _slBtns.Length; k++)
+                        Paint(_slBtns[k], k == idx);
+                    Rebuild();
+                });
+                sl[i] = _slBtns[i];
+            }
+            s.Children.Add(Row2(Small("Stop"), Cols(sl)));
+
+            s.Children.Add(Rule());
+            return s;
+        }
+
+        private UIElement BuildSessionSection()
+        {
+            StackPanel s = new StackPanel();
+            s.Children.Add(Section("SESSION"));
+            _sessionA = Small("--");
+            _sessionB = Small("--");
+            s.Children.Add(_sessionA);
+            s.Children.Add(_sessionB);
+            s.Children.Add(Rule());
+            return s;
+        }
+
         #endregion
 
         #region Panel actions (strategy thread)
@@ -408,6 +508,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (State != State.Realtime && State != State.Historical)
                 return;
             TriggerCustomEvent(work, null);
+        }
+
+        // B5. Every toggle used to call BuildConfigs() straight out of its click
+        // handler — i.e. on the WPF thread — swapping _cfg and the engine out
+        // from under a running OnBarUpdate. Flipping the bool is a single
+        // aligned write and survives that; rebuilding the config object does
+        // not. Both now happen on NinjaScript's thread, in order, via the same
+        // TriggerCustomEvent bridge as every order-touching action below —
+        // BuildConfigs replaces _engine (a live reference OnBarUpdate reads
+        // every bar), which is exactly the kind of multi-field swap the bridge
+        // exists to make atomic from the strategy thread's point of view.
+        private void Rebuild()
+        {
+            Dispatch(o => BuildConfigs());
         }
 
         // Pull the stop to breakeven NOW, by hand. Monotone like every other
