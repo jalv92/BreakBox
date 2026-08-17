@@ -29,6 +29,20 @@ public static class BoxTests
         ExpirySpendsAnArmRejectionRefundsIt();
         SecondsScaleToBars();
         AutoTradeIsAFinalVeto();
+        DirectionOffIsANamedBlocker();
+    }
+
+    // No production seam seeds the sealed-range ring — `SeedSealedRange` was
+    // dead (nothing in the shell ever called it, and `BbTradeRecord` carries no
+    // box-range field to seed from) and was deleted. Tests reach into the
+    // state's own public ring instead, four lines lifted verbatim from `Seal()`.
+    private static void Seed(BbEngineState st, double range)
+    {
+        st.SealedRanges[st.SealedIdx] = range;
+        st.SealedIdx = (st.SealedIdx + 1) % st.SealedRanges.Length;
+        if (st.SealedFilled < st.SealedRanges.Length)
+            st.SealedFilled++;
+        st.SealedCount++;
     }
 
     private static void SecondsScaleToBars()
@@ -412,8 +426,9 @@ public static class BoxTests
         // Every depth any Gate.Set passes must index a real rung. Cheap, and it
         // catches the one-sided edit that would otherwise only show up as a
         // mislabelled row on a chart.
-        T.CheckInt(BbEngine.GateLadder.Length, 11, "the box ladder has 11 rungs");
+        T.CheckInt(BbEngine.GateLadder.Length, 12, "the box ladder has 12 rungs");
         T.Check(BbEngine.GateLadder[10] == "cooldown", "cooldown is its own rung, not sharing 9 with arms");
+        T.Check(BbEngine.GateLadder[11] == "direction off", "direction off is appended, not inserted");
     }
 
     // Task veto: `canTrade` moved from an early gate at rung 4 to a FINAL veto
@@ -462,6 +477,41 @@ public static class BoxTests
         T.CheckInt(st.Gate.GateDepth, 4, "auto-trade sits at depth 4");
         T.CheckInt(st.ArmsUp, 0, "no arm was spent — the deeper bar before it didn't open a hole either");
         T.CheckInt(st.TradesThisBox, 0, "no trade counted");
+        T.Check(!st.Armed, "the engine state never armed");
+    }
+
+    // The direction gate has its own rung. Before this, AllowLong/AllowShort
+    // were folded into the break test at rung 8, so an operator who disabled
+    // Short read "close X inside Y/Z" — the break gate's message — for a bar
+    // that DID break; the real reason was the toggle he flipped.
+    private static void DirectionOffIsANamedBlocker()
+    {
+        T.Section("Box — AllowLong/AllowShort are their own rung, not folded into break");
+
+        var cfg = Cfg();
+        cfg.BoxMeanSamples = 1;
+        cfg.AllowShort = false;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        Seed(st, 1.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box != null && st.Box.Valid, "a valid box exists");
+
+        // Bar 7 — a real short break (close 99.00 < box low 99.50), inside the
+        // 1.0-point BoxDeadAtr tolerance so the box itself survives to be
+        // arm-tested, with Short disabled.
+        var broke = Step(eng, t, 100.0, 100.5, 98.75, 99.0, 2.0);
+        T.Check(!broke.Fire, "a disabled direction never arms");
+        T.Check(st.Gate.Block == "direction off", "the gate names it, not 'break' (got '" + st.Gate.Block + "')");
+        T.CheckInt(st.Gate.GateDepth, 11, "direction off sits at the appended rung");
+        T.Check(st.Gate.BlockDetail == "short disabled", "and says which side (got '" + st.Gate.BlockDetail + "')");
+        T.CheckInt(st.ArmsDn, 0, "nothing armed — a refused direction spends no edge");
         T.Check(!st.Armed, "the engine state never armed");
     }
 

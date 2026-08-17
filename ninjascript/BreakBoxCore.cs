@@ -194,7 +194,12 @@ namespace BreakBoxCore
             "armed",        // 7
             "break",        // 8
             "arms",         // 9  arms-per-edge spent
-            "cooldown"      // 10
+            "cooldown",     // 10
+            "direction off" // 11 — AllowLong/AllowShort, the panel's Buy/Sell
+                            // toggles. Appended, not inserted: this array is
+                            // rendered by index (see the comment above), so a
+                            // new rung goes on the end or every existing row
+                            // label shifts under the panel's feet.
         };
 
         public BbEngine(BbConfig cfg, BbEngineState st)
@@ -356,8 +361,15 @@ namespace BreakBoxCore
             // single most common way a box-breakout backtest lies to you: it
             // counts the touch as a break and the reversal as bad luck. v1 made
             // that a dial; it is not one.
-            bool up = bar.Close > box.High && _cfg.AllowLong;
-            bool dn = bar.Close < box.Low && _cfg.AllowShort;
+            //
+            // AllowLong/AllowShort are NOT folded in here. Gating the break
+            // test on them would mean a disabled direction's close never even
+            // registers as a break — an operator who turns Sell off would read
+            // "close X inside Y/Z" (this gate's message) for what is really
+            // rung 11 below. Checked there instead, at the final-veto position,
+            // same reasoning as the cloud engine's own "direction off".
+            bool up = bar.Close > box.High;
+            bool dn = bar.Close < box.Low;
             if (!up && !dn)
             {
                 _st.Gate.Set("break", "close " + F(bar.Close) + " inside "
@@ -401,6 +413,20 @@ namespace BreakBoxCore
             if (!canTrade)
             {
                 _st.Gate.Set("auto-trade", "off or locked out", 4);
+                return a;
+            }
+
+            // The panel's Buy/Sell toggles (BreakBoxPanel.cs's _uiLongOn /
+            // _uiShortOn, fed to both engines via BuildConfigs). Same
+            // final-veto placement as canTrade just above, for the identical
+            // reason: folding this into the break gate at rung 8 would mean a
+            // disabled direction's break never reaches arms/cooldown, so an
+            // operator who turns Sell off would see "close X inside Y/Z" — the
+            // break gate's message — for what is really this dial.
+            bool dirAllowed = dir > 0 ? _cfg.AllowLong : _cfg.AllowShort;
+            if (!dirAllowed)
+            {
+                _st.Gate.Set("direction off", dir > 0 ? "long disabled" : "short disabled", 11);
                 return a;
             }
 
