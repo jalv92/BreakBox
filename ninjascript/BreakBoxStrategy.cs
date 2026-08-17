@@ -114,6 +114,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string _exitReason = "";
         private int _entryBarsWaiting;
 
+        // §8. The whole parameter surface is seconds; this pair is the only
+        // place that knows how many of them a bar is worth. Cached at
+        // DataLoaded because the estimate walks the loaded history and
+        // BuildConfigs runs again on every panel click.
+        private int _barSec = BbScale.FallbackSeconds;
+        private string _barSecLabel = "";
+
         private volatile bool _stopChangePending;
         private DateTime _stopChangeSentAt = DateTime.MinValue;
         private double _lastStopSent = double.NaN;
@@ -185,7 +192,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AllowShort = true;
                 BreakBufferTicks = 4;
                 RequireCloseOutside = true;
-                TriggerLifeBars = 5;
+                TriggerLifeSec = 120;
                 ExtensionAtr = 1.0;
                 RetraceMaxBars = 30;
                 RetraceOffsetTicks = 0;
@@ -238,6 +245,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.DataLoaded)
             {
+                _barSec = BarSeconds();
+                Print("BreakBox: bar ~ " + _barSec + "s (" + _barSecLabel + ")");
                 BuildConfigs();
                 _engine = new BbEngine(_cfg, _engState);
                 _atr = new WilderAtr(AtrPeriod);
@@ -287,7 +296,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             _cfg.AllowShort = _uiShortOn;
             _cfg.BreakBufferTicks = BreakBufferTicks;
             _cfg.RequireCloseOutside = RequireCloseOutside;
-            _cfg.TriggerLifeBars = TriggerLifeBars;
+            // §8. The conversion lives HERE, not at DataLoaded: a panel toggle
+            // rebuilds this config too, and a rebuild that skipped the
+            // conversion would hand the engine raw seconds as a bar count.
+            _cfg.TriggerLife = BbScale.Bars(TriggerLifeSec, _barSec, 1);
             _cfg.ExtensionAtr = ExtensionAtr;
             _cfg.RetraceMaxBars = RetraceMaxBars;
             _cfg.RetraceOffsetTicks = RetraceOffsetTicks;
@@ -319,6 +331,54 @@ namespace NinjaTrader.NinjaScript.Strategies
             // handed over rather than left dangling on the old object.
             if (_engine != null)
                 _engine = new BbEngine(_cfg, _engState);
+        }
+
+        // How many seconds is one bar of the primary series worth? Time series
+        // answer exactly. Tick, volume and range bars are ESTIMATED from the
+        // loaded history, because Javier runs 150-tick charts elsewhere in this
+        // workspace and a hard throw would turn "que escale sola" into "no
+        // carga". The model is calibrated for time bars; the estimate makes a
+        // tick chart usable and visibly approximate rather than silently wrong.
+        private int BarSeconds()
+        {
+            int v = BarsPeriod.Value < 1 ? 1 : BarsPeriod.Value;
+            switch (BarsPeriod.BarsPeriodType)
+            {
+                case BarsPeriodType.Second:
+                    _barSecLabel = "exact";
+                    return v;
+                case BarsPeriodType.Minute:
+                    _barSecLabel = "exact";
+                    return v * 60;
+                case BarsPeriodType.Day:
+                    _barSecLabel = "exact";
+                    return v * 86400;
+            }
+
+            int n = Bars != null ? Bars.Count : 0;
+            int want = n - 1;
+            if (want > 5000)
+                want = 5000;                    // one session of 150-tick bars is already plenty
+            if (want >= BbScale.MinEstimateSamples)
+            {
+                double[] gaps = new double[want];
+                int first = n - want;
+                for (int i = 0; i < want; i++)
+                    gaps[i] = (Bars.GetTime(first + i) - Bars.GetTime(first + i - 1)).TotalSeconds;
+
+                int est = BbScale.EstimateBarSeconds(gaps, want);
+                if (est > 0)
+                {
+                    _barSecLabel = "est, " + v + "-" + BarsPeriod.BarsPeriodType;
+                    return est;
+                }
+            }
+
+            _barSecLabel = "fallback";
+            Print("BreakBox WARNING: " + BarsPeriod.BarsPeriodType + " series with " + n
+                  + " bars loaded — too little history to estimate the bar size. Falling back to "
+                  + BbScale.FallbackSeconds + "s, so EVERY seconds-based horizon is now a guess.");
+            return BbScale.FallbackSeconds;
         }
 
         #endregion
@@ -506,7 +566,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void AgeWorkingEntry()
         {
             _entryBarsWaiting++;
-            if (_entryBarsWaiting <= TriggerLifeBars)
+            if (_entryBarsWaiting <= _cfg.TriggerLife)
                 return;
             CancelWorkingEntry("expired");
         }
@@ -905,9 +965,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Require close outside", Description = "OFF trades wicks through the edge", Order = 6, GroupName = "03. Engines")]
         public bool RequireCloseOutside { get; set; }
 
-        [NinjaScriptProperty, Range(1, 500)]
-        [Display(Name = "Trigger life (bars)", Order = 7, GroupName = "03. Engines")]
-        public int TriggerLifeBars { get; set; }
+        [NinjaScriptProperty, Range(5, 3600)]
+        [Display(Name = "Trigger life (seconds)", Order = 7, GroupName = "03. Engines")]
+        public int TriggerLifeSec { get; set; }
 
         [NinjaScriptProperty, Range(0.0, 20.0)]
         [Display(Name = "Retrace: extension (ATR)", Order = 8, GroupName = "03. Engines")]

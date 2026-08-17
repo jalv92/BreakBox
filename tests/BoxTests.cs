@@ -161,7 +161,7 @@ public static class BoxTests
         cfg.EnableBreak = true;
         cfg.BreakBufferTicks = 4;               // 1.00 point
         cfg.RequireCloseOutside = true;
-        cfg.TriggerLifeBars = 3;
+        cfg.TriggerLife = 3;
 
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
@@ -199,7 +199,7 @@ public static class BoxTests
             // Stays outside the box, so only the bar budget can kill it.
             eng2.OnBar(Bar(v, 111, 112.5, 110.5, 111.5), Secs(v), v.Date, 4.0, true, false);
         }
-        T.Check(!eng2.BreakArmed, "the trigger expires after TriggerLifeBars");
+        T.Check(!eng2.BreakArmed, "the trigger expires after TriggerLife");
     }
 
     private static void BreakRequiresClose()

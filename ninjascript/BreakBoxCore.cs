@@ -101,7 +101,11 @@ namespace BreakBoxCore
         // The trigger is not live forever. If price closes back inside and stays
         // there, the break thesis is dead and a resting stop order becomes a
         // random re-entry days later.
-        public int TriggerLifeBars = 5;
+        // A bar count, and the ONLY writer is BuildConfigs' conversion. It is not
+        // called *Bars because the surface used to carry the same spelling, and
+        // two dials with one name is how a seconds value ends up living in a bar
+        // counter without anything complaining.
+        public int TriggerLife = 5;
 
         // --- Retrace engine
         // What counts as a REAL extension before we are willing to buy the pull
@@ -232,7 +236,7 @@ namespace BreakBoxCore
             if (_st.BreakArmed)
             {
                 _st.BreakArmedBars++;
-                if (_st.BreakArmedBars > _cfg.TriggerLifeBars)
+                if (_st.BreakArmedBars > _cfg.TriggerLife)
                     DisarmBreak("expired");
                 else if (BackInside(bar))
                     DisarmBreak("reentered");
