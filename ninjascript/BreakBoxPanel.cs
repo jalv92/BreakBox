@@ -354,6 +354,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string sig = dir > 0 ? SigLong : SigShort;
             _entryPending = true;
+            _owningEngine = a.Engine;
+            _entryFromEngine = false;       // nothing armed this; there is no token to hand back
             _dir = dir;
             _qty = qty;
             _entrySig = sig;

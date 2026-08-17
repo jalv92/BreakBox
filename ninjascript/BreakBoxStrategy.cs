@@ -109,6 +109,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Order _entryOrder, _stopOrder;
         private readonly Order[] _tierOrders = new Order[BbExitConfig.MAX_TIERS];
         private BbAction _pendingAction;
+        // §4.1. Which engine armed the trigger this order came from. Expiry,
+        // disarm and rejection are forwarded ONLY to it, so a cloud refusal can
+        // never cancel the box's trigger once both engines are live.
+        private BbEntryEngine _owningEngine;
+        // A hand-clicked entry owns no token: nothing armed it, so nothing may
+        // be handed back to an engine when it is cancelled.
+        private bool _entryFromEngine;
         private DateTime _entryTime;
         private double _entryFillPx;
         private string _exitReason = "";
@@ -522,7 +529,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             int qty = SizedQty();
             if (qty < 1)
+            {
+                // B4. The engine armed this trigger; the shell is throwing it
+                // away. Say so, or the edge stays spent on a trade that was
+                // never attempted.
+                OnEntryRejected(a.Engine, "qty<1");
                 return;
+            }
 
             // Refuse the trade at SUBMIT time if the stop it would get is
             // unusable — discovering it at the fill means holding a position
@@ -540,6 +553,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Written BEFORE the submit: NT8 can deliver the fill in-stack.
             _entryPending = true;
+            _owningEngine = a.Engine;
+            _entryFromEngine = true;
             _dir = a.Dir;
             _qty = qty;
             _entrySig = sig;
@@ -563,19 +578,33 @@ namespace NinjaTrader.NinjaScript.Strategies
                                   a.Dir > 0 ? Brushes.LimeGreen : Brushes.OrangeRed));
         }
 
-        // The working entry does not live forever. A stop-market trigger left
-        // resting after its thesis died is a random re-entry hours later; the
-        // core already expires its own trigger, and this cancels the order that
-        // went with it.
+        // B6/B7 — ONE clock, and it belongs to the engine. The shell mirrors:
+        // when the engine that armed this trigger disarms it (its bar budget ran
+        // out, or price closed back inside), the resting order that trigger
+        // produced is cancelled here. v1 counted its own bars from SUBMIT while
+        // the engine counted from ARM, and neither cancelled the other's object
+        // — so an inside-close disarm left a stop entry resting on a dead level
+        // for the rest of the session.
         private void AgeWorkingEntry()
         {
-            _entryBarsWaiting++;
-            if (_entryBarsWaiting <= _cfg.TriggerLife)
+            _entryBarsWaiting++;                // display only; nothing decides on it
+            if (!_entryFromEngine || _engine == null || _owningEngine == BbEntryEngine.Cloud)
                 return;
-            CancelWorkingEntry("expired");
+            if (_engine.BreakArmed)
+                return;
+            CancelWorkingEntry("engine:" + _engine.LastDisarmReason, true);
         }
 
         private void CancelWorkingEntry(string why)
+        {
+            CancelWorkingEntry(why, false);
+        }
+
+        // `engineDisarmed` = the engine already killed the trigger and this is
+        // the shell catching up. Everything else is a REFUSAL: the trigger was
+        // still good and the shell threw the trade away, which is the case that
+        // has to hand the edge back (§11 B4).
+        private void CancelWorkingEntry(string why, bool engineDisarmed)
         {
             if (!_entryPending)
                 return;
@@ -585,6 +614,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                                         || _entryOrder.OrderState == OrderState.Accepted))
                 CancelOrder(_entryOrder);
             _entryOrder = null;
+
+            if (!_entryFromEngine)
+                return;
+            _entryFromEngine = false;
+            if (engineDisarmed)
+            {
+                if (_owningEngine != BbEntryEngine.Cloud && _engine != null)
+                    _engine.OnTriggerExpired();
+            }
+            else
+            {
+                OnEntryRejected(_owningEngine, why);
+            }
+        }
+
+        // The single refusal callback. It routes on the OWNING engine (§4.1):
+        // only the box engine exists today, and BreakBoxCloud claims
+        // BbEntryEngine.Cloud here the moment it lands.
+        private void OnEntryRejected(BbEntryEngine engine, string reason)
+        {
+            Print("BreakBox: entry refused (" + reason + ")");
+            if (engine != BbEntryEngine.Cloud && _engine != null)
+                _engine.OnEntryRejected(reason);
         }
 
         private int SizedQty()
@@ -731,6 +783,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if ((sig == SigLong || sig == SigShort) && execution.Order.OrderState == OrderState.Filled)
             {
                 _entryPending = false;
+                _entryFromEngine = false;
                 _entryBarsWaiting = 0;
                 _inTrade = true;
                 _entryFillPx = price;
@@ -795,7 +848,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3)
                     FlattenAll("leg_rejected");
                 else if (sig == SigLong || sig == SigShort)
+                {
                     _entryPending = false;
+                    if (_entryFromEngine)
+                    {
+                        _entryFromEngine = false;
+                        OnEntryRejected(_owningEngine, "order_rejected");
+                    }
+                }
                 return;
             }
 

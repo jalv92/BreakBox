@@ -35,7 +35,12 @@ namespace BreakBoxCore
     public enum BbEntryEngine
     {
         Break = 0,              // trade the break of the edge
-        Retrace = 1             // let it extend, then trade the return to the edge
+        Retrace = 1,            // let it extend, then trade the return to the edge
+        Cloud = 2               // §5.4's ribbon/gold-candle engine — no code yet, but
+                                // the shell has to be able to NAME the owner of an
+                                // order before the engine that arms it exists, or
+                                // every routing branch below is written against a
+                                // value that will not compile.
     }
 
     // The five stop sources the target's panel exposes. Priced in BreakBoxExits;
