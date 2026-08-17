@@ -156,7 +156,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // clicks something.
         private bool _uiAutoTrade = true;
         private bool _uiCloudOn;
-        private bool _uiBreakOn, _uiRetraceOn, _uiLongOn, _uiShortOn;
+        private bool _uiBreakOn, _uiLongOn, _uiShortOn;
         private double _uiRiskMult = 1.0;
         private BbStopSource _uiStopSource;
 
@@ -193,26 +193,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BaseQuantity = 3;
                 RiskMultiplier = 1.0;
 
-                // ---- Box
-                BoxSourceParam = BbBoxSource.PriorPeriod;
-                HtfMinutes = 240;
+                // ---- Box and engines. Every box horizon is a SECONDS
+                // parameter (§8) and is converted in BuildConfigs().
                 SessionOpenHhmm = 1800;
-                IbStartHhmm = 930;
-                IbMinutes = 60;
-                MinBoxRangeAtr = 0.5;
-                MaxBoxRangeAtr = 6.0;
 
-                // ---- Engines
                 EnableBreak = true;
-                EnableRetrace = false;
                 AllowLong = true;
                 AllowShort = true;
-                BreakBufferTicks = 4;
-                RequireCloseOutside = true;
                 TriggerLifeSec = 120;
-                ExtensionAtr = 1.0;
-                RetraceMaxBars = 30;
-                RetraceOffsetTicks = 0;
 
                 // ---- Cloud (§5.4). M rows are measurements off the reference
                 // chart at 30s; G rows are honest guesses, and §13 step 3 tunes
@@ -306,7 +294,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 _uiCloudOn = EnableCloud;
                 _uiBreakOn = EnableBreak;
-                _uiRetraceOn = EnableRetrace;
                 _uiLongOn = AllowLong;
                 _uiShortOn = AllowShort;
                 _uiRiskMult = RiskMultiplier;
@@ -333,27 +320,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             _cfg = new BbConfig();
             _cfg.TickSize = TickSize;
-            _cfg.BoxSource = BoxSourceParam;
-            _cfg.HtfMinutes = HtfMinutes;
-            _cfg.SessionOpenHhmm = SessionOpenHhmm;
-            _cfg.IbStartHhmm = IbStartHhmm;
-            _cfg.IbMinutes = IbMinutes;
-            _cfg.SessionCloseHhmm = FlattenHhmm;
-            _cfg.MinBoxRangeAtr = MinBoxRangeAtr;
-            _cfg.MaxBoxRangeAtr = MaxBoxRangeAtr;
             _cfg.EnableBreak = _uiBreakOn;
-            _cfg.EnableRetrace = _uiRetraceOn;
             _cfg.AllowLong = _uiLongOn;
             _cfg.AllowShort = _uiShortOn;
-            _cfg.BreakBufferTicks = BreakBufferTicks;
-            _cfg.RequireCloseOutside = RequireCloseOutside;
             // §8. The conversion lives HERE, not at DataLoaded: a panel toggle
             // rebuilds this config too, and a rebuild that skipped the
             // conversion would hand the engine raw seconds as a bar count.
+            // The box's remaining §6.1 lifecycle dials (BoxLookback,
+            // BoxMinBars, ...) are not yet on the parameter surface — they
+            // stay at BbConfig's own defaults until a later task adds their
+            // NinjaScriptProperty and BuildConfigs() wiring.
             _cfg.TriggerLife = BbScale.Bars(TriggerLifeSec, _barSec, 1);
-            _cfg.ExtensionAtr = ExtensionAtr;
-            _cfg.RetraceMaxBars = RetraceMaxBars;
-            _cfg.RetraceOffsetTicks = RetraceOffsetTicks;
             _cfg.MaxTradesPerBox = MaxTradesPerBox;
             _cfg.MaxTradesPerDay = MaxTradesPerDay;
             _cfg.EntryWindowStartHhmm = EntryWindowStartHhmm;
@@ -1037,7 +1014,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _lastDrawnBoxId = box.Id;
 
             Brush b = box.Valid ? Brushes.DeepSkyBlue : Brushes.Gray;
-            DrawTag(Draw.Rectangle(this, Tag("box"), false, box.AnchorStart, box.Low, Time[0].AddHours(4),
+            DrawTag(Draw.Rectangle(this, Tag("box"), false, box.SealedAt, box.Low, Time[0].AddHours(4),
                                    box.High, b, b, 12));
             DrawTag(Draw.Text(this, Tag("boxlab"), box.Valid ? "BOX" : "BOX (out of band)", 0,
                               box.High + 4 * TickSize, b));
@@ -1094,41 +1071,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Risk multiplier", Description = "0.5 / 1 / 1.5 on the panel", Order = 2, GroupName = "01. Sizing")]
         public double RiskMultiplier { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Box source", Order = 1, GroupName = "02. Box")]
-        public BbBoxSource BoxSourceParam { get; set; }
-
-        [NinjaScriptProperty, Range(1, 1440)]
-        [Display(Name = "HTF minutes", Description = "PriorPeriod slot width", Order = 2, GroupName = "02. Box")]
-        public int HtfMinutes { get; set; }
-
         [NinjaScriptProperty, Range(0, 2359)]
         [Display(Name = "Session open HHMM", Order = 3, GroupName = "02. Box")]
         public int SessionOpenHhmm { get; set; }
 
-        [NinjaScriptProperty, Range(0, 2359)]
-        [Display(Name = "IB start HHMM", Order = 4, GroupName = "02. Box")]
-        public int IbStartHhmm { get; set; }
-
-        [NinjaScriptProperty, Range(1, 720)]
-        [Display(Name = "IB minutes", Order = 5, GroupName = "02. Box")]
-        public int IbMinutes { get; set; }
-
-        [NinjaScriptProperty, Range(0.0, 100.0)]
-        [Display(Name = "Min box range (ATR)", Order = 6, GroupName = "02. Box")]
-        public double MinBoxRangeAtr { get; set; }
-
-        [NinjaScriptProperty, Range(0.0, 1000.0)]
-        [Display(Name = "Max box range (ATR)", Order = 7, GroupName = "02. Box")]
-        public double MaxBoxRangeAtr { get; set; }
-
         [NinjaScriptProperty]
         [Display(Name = "Enable Break engine", Order = 1, GroupName = "03. Engines")]
         public bool EnableBreak { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Enable Retrace engine", Order = 2, GroupName = "03. Engines")]
-        public bool EnableRetrace { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Allow long", Order = 3, GroupName = "03. Engines")]
@@ -1149,18 +1098,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(5, 3600)]
         [Display(Name = "Trigger life (seconds)", Order = 7, GroupName = "03. Engines")]
         public int TriggerLifeSec { get; set; }
-
-        [NinjaScriptProperty, Range(0.0, 20.0)]
-        [Display(Name = "Retrace: extension (ATR)", Order = 8, GroupName = "03. Engines")]
-        public double ExtensionAtr { get; set; }
-
-        [NinjaScriptProperty, Range(1, 500)]
-        [Display(Name = "Retrace: max bars", Order = 9, GroupName = "03. Engines")]
-        public int RetraceMaxBars { get; set; }
-
-        [NinjaScriptProperty, Range(0, 100)]
-        [Display(Name = "Retrace: offset (ticks)", Order = 10, GroupName = "03. Engines")]
-        public int RetraceOffsetTicks { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Cloud engine", Description = "§5 — the primary engine. The reference panel reads Signal ON / Break OFF", Order = 11, GroupName = "03. Engines")]

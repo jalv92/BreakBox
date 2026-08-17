@@ -1,46 +1,40 @@
-// BreakBoxCore.cs — the box and the two entry engines. Pure decision code; it
-// never touches an order, never reads a clock, never does I/O.
+// BreakBoxCore.cs — Engine B, the box. Pure decision code: it never touches an
+// order, never reads a clock, never does I/O.
 //
 // ZERO `using NinjaTrader.*`, own namespace `BreakBoxCore`, C# 7.3 only — same
 // rules and same reason as BreakBoxTypes.cs.
 //
-// WHAT A BOX IS. A price range built from a completed period, projected forward,
-// and traded either on its break or on the retrace back to its edge after a real
-// extension. Three sources, selectable, because the target exposes exactly this
-// idea three ways: a 4H prior-period box on the chart (`PH High` / `PH Low`), an
-// Initial Balance in the bundled IB bot, and per-session windows in the
-// optimiser. They are the same object with different anchors.
+// WHY v1's BOX IS DELETED RATHER THAN RETUNED. v1 built a 240-MINUTE wall-clock
+// range and validated it against a 14-BAR ATR: 275 points / 7.85 = 35 ATR
+// against a ceiling of 6. No box was ever valid, so no engine ever ran and the
+// strategy took ZERO trades. That is a dimensional error, not a tuning problem.
+// The whole slot machinery is therefore gone — SlotOf, BbBoxSource, HtfMinutes,
+// IbStartHhmm, IbMinutes, SessionCloseHhmm — and with it BreakSpentDir. Deleting
+// them CLOSES B11 (the SlotOf off-by-one) and B12 (BreakSpentDir, a single int
+// doing the work of a per-direction latch): the code that held both bugs no
+// longer exists. The Retrace engine goes too — it is retired, and only its enum
+// value survives so saved workspaces do not shift.
 //
-// THE BOX IS BUILT HERE, NOT FROM A SECOND DATA SERIES. Feeding 1m bars and
-// folding them into HTF slots inside the engine costs ~30 lines and removes the
-// entire AddDataSeries fold-index problem from the shell — and, more to the
-// point, lets the test runner build a box without NT8 in the room. The slots are
-// anchored to the ETH session open (18:00 ET), which is where NT8 anchors its
-// own 4H bars, so a 240-minute slot here lines up with a 240-minute bar there.
+// WHAT A BOX IS IN v2. A micro accumulation measured in BARS all the way down:
+// the range of the last BoxLookback CLOSED bars, judged against a percentile of
+// that same measurement over the recent past, then validated against the mean
+// range of boxes sealed before it. Every number in the chain is a bar range over
+// a bar range — dimensionless, and it survives a change of bar size, which is
+// exactly what MinBoxRangeAtr / MaxBoxRangeAtr were failing to express.
 //
-// TIMING. Every decision is taken at a BAR CLOSE, from closed bars only. The
-// engine never sees an intra-bar price, so nothing it returns can depend on one.
+// TIMING. Every decision is taken at a BAR CLOSE, from closed bars only, and the
+// formation window EXCLUDES the bar being processed: including it is a one-bar
+// lookahead that lets the range see the break it is about to be tested against.
 using System;
-using System.Collections.Generic;
+using System.Globalization;
 
 namespace BreakBoxCore
 {
-    public enum BbBoxSource
-    {
-        PriorPeriod = 0,        // the previous HTF slot (the chart's 4H `PH High`/`PH Low` box)
-        InitialBalance = 1,     // the first N minutes after the session's cash open
-        PriorSession = 2        // the whole previous session
-    }
-
     public enum BbEntryEngine
     {
-        Break = 0,              // trade the break of the edge
-        Retrace = 1,            // let it extend, then trade the return to the edge
-        Cloud = 2               // §5.4's ribbon/gold-candle engine — no code yet, but
-                                // the shell has to be able to NAME the owner of an
-                                // order before the engine that arms it exists, or
-                                // every routing branch below is written against a
-                                // value that will not compile.
+        Break = 0,
+        Retrace = 1,            // retired in v2; the value is retained so saved workspaces do not shift
+        Cloud = 2
     }
 
     // The five stop sources the target's panel exposes. Priced in BreakBoxExits;
@@ -58,10 +52,9 @@ namespace BreakBoxCore
     {
         public double High;
         public double Low;
-        public DateTime AnchorStart;    // first bar of the period the box describes
-        public DateTime AnchorEnd;      // the bar that closed it
-        public bool Valid;              // range passed the ATR sanity band
-        public int Id;                  // monotone; the shell keys per-box trade counts off this
+        public DateTime SealedAt;       // the bar that froze the edges
+        public bool Valid;              // passed the §6.1 validity gate at seal time
+        public int Id;                  // monotone; arming is counted per edge PER ID
 
         public double Range { get { return High - Low; } }
     }
@@ -70,73 +63,40 @@ namespace BreakBoxCore
     {
         public double TickSize = 0.25;
 
-        // --- Box construction
-        public BbBoxSource BoxSource = BbBoxSource.PriorPeriod;
-        public int HtfMinutes = 240;            // PriorPeriod slot width, anchored to the session open
-        public int SessionOpenHhmm = 1800;      // ETH open, ET. The anchor for every slot boundary.
-        public int IbStartHhmm = 930;           // InitialBalance: the cash open
-        public int IbMinutes = 60;
-        public int SessionCloseHhmm = 1700;     // PriorSession rolls here
+        // --- Box lifecycle (§6.1). Every horizon here is in BARS and is
+        // converted from a SECONDS parameter inside the shell's BuildConfigs().
+        // BoxMinBars is the exception: it is a confirmation COUNT, not a
+        // horizon, so it does not scale with bar size.
+        public int BoxLookback = 7;
+        public int BoxMinBars = 2;
+        public double BoxRangePctile = 35.0;
+        public int BoxSampleN = 200;
+        public int BoxMeanSamples = 20;
+        public double BoxValidLo = 0.4;
+        public double BoxValidHi = 2.5;
+        public double BoxDeadAtr = 0.5;
+        public int BoxMaxAge = 60;
+        public int BoxArmsPerEdge = 2;
+        public int BoxArmCooldown = 6;
 
-        // A box far outside the ordinary range is not a box: an 8-ATR overnight
-        // slot is a trend leg with two arbitrary ends, and a 0.2-ATR one is
-        // noise whose "break" is one tick of drift. Both produce trades the
-        // model was never about, so both are refused outright rather than
-        // sized down.
-        public double MinBoxRangeAtr = 0.5;
-        public double MaxBoxRangeAtr = 6.0;
-
-        // --- Engines (independent toggles, exactly like the target's panel)
-        public bool EnableBreak = true;
-        public bool EnableRetrace = false;
-        public bool AllowLong = true;
-        public bool AllowShort = true;
-
-        // --- Break engine
-        // The trigger sits BEYOND the edge and is a stop order, matching the
-        // observed fills (signal 26853.00 -> fill 26853.75, +3 ticks; signal
-        // 23713.75 -> fill 23713.50 on a short). A limit at the edge is a
-        // different model — it wins the mean-reverting cases and loses every
-        // real break — and it is not what the target does.
-        public int BreakBufferTicks = 4;
-        // Require the bar to CLOSE outside. A wick through the edge is the
-        // single most common way a box breakout backtest lies to you: it counts
-        // the touch as a break and the reversal as bad luck.
-        public bool RequireCloseOutside = true;
-        // The trigger is not live forever. If price closes back inside and stays
-        // there, the break thesis is dead and a resting stop order becomes a
-        // random re-entry days later.
-        // A bar count, and the ONLY writer is BuildConfigs' conversion. It is not
-        // called *Bars because the surface used to carry the same spelling, and
-        // two dials with one name is how a seconds value ends up living in a bar
-        // counter without anything complaining.
-        public int TriggerLife = 5;
-
-        // --- Retrace engine
-        // What counts as a REAL extension before we are willing to buy the pull
-        // back. The bundled IB bot's whole pitch is "waits for a real extension,
-        // then enters the retrace instead of chasing".
-        public double ExtensionAtr = 1.0;
-        // How long the retrace may take. Past this the extension is old news and
-        // the edge is just a level price happens to be near.
-        public int RetraceMaxBars = 30;
-        // The limit sits this far INSIDE the box from the edge (0 = at the edge).
-        public int RetraceOffsetTicks = 0;
-        // Refuse the retrace if price has closed back through the far side of
-        // the box: that is not a retrace to the breakout edge, it is a failed
-        // break traversing the range.
-        public bool RetraceAbortOnFarSide = true;
+        // --- Entry. Same stop-market mechanism as the cloud engine's §5.2
+        // step 6, and the SAME offset dial: two dials meaning "how far beyond
+        // the bar" is one dial and one place to disagree with yourself.
+        public int TriggerOffsetTicks = 1;
+        public int TriggerLife = 4;
 
         // --- Gating
+        public bool EnableBreak = true;
+        public bool AllowLong = true;
+        public bool AllowShort = true;
         public int MaxTradesPerBox = 1;
         // A governor of last resort, not a plan. The design frequency is 8-12
         // fills per session (§13 step 4); the daily budget only has to stop a
         // runaway loop. DailyLossLimit in the shell is the real governor,
-        // because it measures HOW MUCH, not HOW MANY.
+        // because it measures HOW MUCH, not HOW MANY. Phase 1 set this to 30
+        // (B9) and the rewrite carries it over verbatim — a rewrite that
+        // quietly restores an old default is how a closed bug reopens.
         public int MaxTradesPerDay = 30;
-        // RTH only, and off the tape 15 minutes before the cash close. The
-        // 18:00 -> 17:00 default it replaces was the whole ETH session: a
-        // 22-hour window gates nothing while looking like it does.
         public int EntryWindowStartHhmm = 930;
         public int EntryWindowEndHhmm = 1545;
         public int AtrPeriod = 14;
@@ -147,11 +107,11 @@ namespace BreakBoxCore
         public bool Fire;
         public int Dir;                 // +1 long, -1 short
         public BbEntryEngine Engine;
-        public double TriggerPx;        // stop price (Break) or limit price (Retrace)
+        public double TriggerPx;        // stop price
         public bool IsLimit;            // false => stop-market
         public double SignalBarHigh;    // the `Candle` stop source reads these two
         public double SignalBarLow;
-        public double BoxHigh, BoxLow;
+        public double BoxHigh, BoxLow;  // 0 when Engine == Cloud
         public int BoxId;
         public string Why;
     }
@@ -159,49 +119,64 @@ namespace BreakBoxCore
     // The engine's ONLY memory. Nothing it needs may live in the shell.
     public sealed class BbEngineState
     {
-        // Box accumulation
-        public double AccHigh = double.NaN;
-        public double AccLow = double.NaN;
-        public DateTime AccStart = DateTime.MinValue;
-        public long AccSlot = long.MinValue;
-        public bool AccOpen;
+        // The engine's own gate report. Never shared with the cloud engine's:
+        // two engines writing one report is how a panel ends up describing the
+        // wrong ladder (§4.2).
+        public readonly BbGateReport Gate = new BbGateReport();
 
+        // Formation window: the last BoxLookback CLOSED bars, EXCLUDING the bar
+        // being processed. Sized from the config, never from a constant.
+        public double[] WinHigh, WinLow;
+        public int WinIdx, WinFilled;
+
+        // Every bar's window range, sampled UNCONDITIONALLY (§6.1). Gating the
+        // sample on the formation test feeds the percentile only ranges that
+        // already passed it — a loop that tightens forever until nothing forms.
+        public double[] Samples;
+        public int SampleIdx, SampleFilled;
+
+        // The candidate under formation
+        public bool CandOpen;
+        public int CandBars;
+        public double CandHigh, CandLow;
+
+        // The sealed box and its age, in bars
         public BbBox Box;
         public int NextBoxId = 1;
+        public int BoxAge;
 
-        // Break state, per direction. `Armed` means a trigger is live.
-        public bool BreakArmed;
-        public int BreakDir;
-        public double BreakTriggerPx;
-        public int BreakArmedBars;
-        // The break of THIS edge has already been taken (armed, filled or
-        // expired) and must not be re-armed until price returns inside the box.
-        // Without this latch a sustained break re-arms on every single bar: the
-        // trigger expires on its bar budget and the very next check sees a close
-        // outside the edge and arms a fresh one, forever.
-        public int BreakSpentDir;
-        // Why the last disarm happened. The shell mirrors the engine's clock
-        // (§11 B6) and logs this when it cancels the order that went with it —
-        // "the order vanished" with no reason is how a live session becomes
-        // unauditable after the fact.
+        // Ranges of the last BoxMeanSamples SEALED boxes — the validity
+        // denominator.
+        public double[] SealedRanges;
+        public int SealedIdx, SealedFilled;
+        public int SealedCount;                 // lifetime count; the cold start reads this
+
+        // Arming, per edge, per box Id (§6.2)
+        public int ArmsUp, ArmsDn;
+        public int LastArmBar = int.MinValue / 2;
+        public int BarCount;
+
+        public bool Armed;
+        public int ArmDir;
+        public double ArmTriggerPx;
+        public int TriggerArmedBars;
+        // Why the last disarm happened — the arm/expire/reject machinery lands
+        // in T44+, but the shell's §4.1 arbitration (AgeWorkingEntry,
+        // OnEntryRejected routing) already reads this every bar and must keep
+        // compiling and logging a reason across the rewrite.
         public string DisarmReason = "";
-
-        // Retrace state
-        public int ExtDir;                      // direction of the excursion being tracked, 0 = none
-        public double ExtEdge;                  // the edge it left from
-        public double ExtBest = double.NaN;     // furthest price beyond the edge
-        public bool ExtQualified;               // excursion reached ExtensionAtr
-        public int ExtBars;
 
         // Counters
         public int TradesThisBox;
         public int TradesToday;
-        public int LastCountedBoxId = -1;
         public DateTime CountedDay = DateTime.MinValue;
     }
 
     public sealed class BbEngine
     {
+        // The gate ladder, in the order the panel renders it:
+        //   0 atr warm · 1 box warming (cold start) · 2 box · 3 box valid
+        //   4 auto-trade · 5 window · 6 budget · 7 armed · 8 break · 9 arms
         private readonly BbConfig _cfg;
         private readonly BbEngineState _st;
 
@@ -209,129 +184,122 @@ namespace BreakBoxCore
         {
             _cfg = cfg;
             _st = st;
+            EnsureBuffers();
         }
 
         public BbBox Box { get { return _st.Box; } }
         public BbEngineState State { get { return _st; } }
 
-        // Feed one CLOSED bar. `secs` is its ET seconds-of-day, `sessionDate`
-        // the trading day it belongs to (used only for the daily trade counter),
-        // `atr` the warm house ATR, `canTrade` whether the shell would accept an
-        // entry at all (auto-trade on, not locked out, indicators warm), and
-        // `positioned` whether it already holds one.
-        //
-        // canTrade suppresses ARMING and FIRING and nothing else (§5.2 step 1b):
-        // the box, the excursion and the trigger clock below it run on every
-        // closed bar regardless, or a flat period leaves a hole in the state and
-        // re-enabling resumes from a stale box.
-        public BbAction OnBar(BbBar bar, int secs, DateTime sessionDate, double atr, bool atrWarm,
-                              bool canTrade, bool positioned)
+        // The shell's §4.1 arbitration (AgeWorkingEntry) reads this every bar a
+        // trigger is working to decide whether the resting order it produced is
+        // still wanted. Arming itself lands in T44+; until then this simply
+        // never goes true, which is the correct "nothing armed" answer.
+        public bool BreakArmed { get { return _st.Armed; } }
+        public string LastDisarmReason { get { return _st.DisarmReason; } }
+
+        // Allocate only when the size actually changed. BuildConfigs() rebuilds
+        // the engine on EVERY panel toggle, and blowing the sample ring away on
+        // a toggle would restart the cold start from zero and mute the engine
+        // for another BoxMeanSamples boxes — a dead strategy caused by clicking
+        // a button.
+        private void EnsureBuffers()
+        {
+            int look = _cfg.BoxLookback < 1 ? 1 : _cfg.BoxLookback;
+            if (_st.WinHigh == null || _st.WinHigh.Length != look)
+            {
+                _st.WinHigh = new double[look];
+                _st.WinLow = new double[look];
+                _st.WinIdx = 0;
+                _st.WinFilled = 0;
+            }
+
+            int n = _cfg.BoxSampleN < 2 ? 2 : _cfg.BoxSampleN;
+            if (_st.Samples == null || _st.Samples.Length != n)
+            {
+                _st.Samples = new double[n];
+                _st.SampleIdx = 0;
+                _st.SampleFilled = 0;
+            }
+
+            int m = _cfg.BoxMeanSamples < 1 ? 1 : _cfg.BoxMeanSamples;
+            if (_st.SealedRanges == null || _st.SealedRanges.Length != m)
+            {
+                _st.SealedRanges = new double[m];
+                _st.SealedIdx = 0;
+                _st.SealedFilled = 0;
+            }
+        }
+
+        // Feed one CLOSED bar. `secs` is its ET seconds-of-day, `sessionDate` the
+        // trading day it belongs to, `canTrade` whether the shell would accept an
+        // entry at all (B2: it used to be computed and discarded AFTER the engine
+        // had already mutated), `positioned` whether a position or a working
+        // entry already exists.
+        public BbAction OnBar(BbBar bar, int secs, DateTime sessionDate,
+                              double atr, bool atrWarm, bool canTrade, bool positioned)
         {
             BbAction a = default(BbAction);
             a.Fire = false;
             a.Why = "none";
 
+            _st.BarCount++;
             RollDay(sessionDate);
-            Accumulate(bar, secs, atr, atrWarm);
 
-            if (_st.Box == null || !_st.Box.Valid || !atrWarm || atr <= 0.0)
+            // Warmup. Every gate below reads an ATR-scaled threshold, and a
+            // partially warmed ATR shrinks all of them at once — which reads as
+            // "it took a trade it should not have", never as a warmup bug.
+            if (!atrWarm || atr <= 0.0)
+            {
+                _st.Gate.Set("atr warm", "warming", 0);
                 return a;
-
-            // A new box resets the per-box counter and every armed trigger: the
-            // level they referenced no longer exists.
-            if (_st.LastCountedBoxId != _st.Box.Id)
-            {
-                _st.LastCountedBoxId = _st.Box.Id;
-                _st.TradesThisBox = 0;
-                DisarmBreak("newbox");
-                ClearExcursion();
             }
 
-            TrackExcursion(bar, atr);
+            // The lifecycle runs on EVERY closed bar — while locked out, while
+            // AUTO-TRADE is off, while positioned. The sample ring, the window
+            // and a box's age describe the TAPE, not our permission to trade it;
+            // suppressing them leaves a hole that re-enabling cannot fill.
+            Lifecycle(bar, atr);
 
-            bool windowOpen = BbMath.InWindow(secs, BbMath.HhmmToSecs(_cfg.EntryWindowStartHhmm),
-                                                    BbMath.HhmmToSecs(_cfg.EntryWindowEndHhmm));
-            bool budget = _st.TradesThisBox < _cfg.MaxTradesPerBox && _st.TradesToday < _cfg.MaxTradesPerDay;
-
-            // Trigger bookkeeping runs even when we cannot trade, so an armed
-            // break expires on schedule instead of surviving a whole flat period
-            // and firing into a stale level.
-            if (_st.BreakArmed)
+            if (_st.SealedCount < _cfg.BoxMeanSamples)
             {
-                _st.BreakArmedBars++;
-                if (_st.BreakArmedBars > _cfg.TriggerLife)
-                    DisarmBreak("expired");
-                else if (BackInside(bar))
-                    DisarmBreak("reentered");
-            }
-
-            // The spent latch clears only when price is back INSIDE the box.
-            // This is what stops a sustained break from re-arming on every bar
-            // for the rest of the session once its first trigger expired.
-            if (_st.BreakSpentDir != 0 && InsideBox(bar, _st.Box))
-                _st.BreakSpentDir = 0;
-
-            if (!canTrade || positioned || !windowOpen || !budget)
+                _st.Gate.Set("box warming",
+                             _st.SealedCount + "/" + _cfg.BoxMeanSamples + " boxes sealed", 1);
                 return a;
-
-            if (_cfg.EnableBreak)
-            {
-                a = TryBreak(bar);
-                if (a.Fire) return Stamp(a);
-            }
-            if (_cfg.EnableRetrace)
-            {
-                a = TryRetrace(bar, atr);
-                if (a.Fire) return Stamp(a);
             }
 
-            a.Fire = false;
-            a.Why = "none";
+            _st.Gate.Set("box", "no sealed box", 2);
             return a;
         }
 
-        // The shell calls this when an entry actually FILLS, not when it is
-        // submitted: a trigger that never filled consumed no budget, and
-        // counting it there is how "MaxTradesPerBox = 1" silently becomes zero
-        // trades on a day of cancelled entries.
+        // Called on the FILL, not on the submit: a trigger that never filled
+        // consumed no budget, and counting it here is how MaxTradesPerBox = 1
+        // silently becomes zero trades on a day of cancelled entries.
         public void OnEntryFilled()
         {
             _st.TradesThisBox++;
             _st.TradesToday++;
-            DisarmBreak("filled");
-            ClearExcursion();
+            Disarm();
         }
 
         // The shell refused, cancelled or lost the entry this engine armed. The
-        // trade was never taken, so the edge is handed back: v1 marked it spent
-        // at ARM time (§11 B3), which turns one refused order into a whole
-        // session with that edge silently dead.
+        // trade was never taken, so the edge is handed back — preserved from v1
+        // (§11 B3/B4) across the rewrite. A no-op today (nothing arms yet) but
+        // the shell's OnEntryRejected routing (§4.1) must keep compiling and the
+        // reason must keep landing in LastDisarmReason for its log line.
         public void OnEntryRejected(string reason)
         {
-            DisarmBreak("refused:" + reason);
-            _st.BreakSpentDir = 0;
+            _st.DisarmReason = "refused:" + reason;
+            Disarm();
         }
 
         // The trigger ran out its own clock and the shell has now cancelled the
-        // order that went with it. There is nothing to undo — the clock lives
-        // here and DisarmBreak already ran on the bar that expired it — so this
-        // only acknowledges, and stays idempotent because the shell calls it for
-        // the owning engine without asking first.
-        //
-        // It deliberately does NOT hand the edge back the way a refusal does: an
-        // expiry means price sat outside that edge for the whole trigger life
-        // without filling, and re-arming there on the next bar is exactly the
-        // every-bar re-arm loop the spent latch exists to stop. Expiry keeps the
-        // edge spent, and still does after §6.2 — what changes there is the SHAPE
-        // of the bound, not the verdict: the single latch becomes `BoxArmsPerEdge`
-        // attempts. That is a budget, not a refund.
+        // order that went with it. Idempotent, like v1: the shell calls it for
+        // the owning engine without asking whether it needs to first.
         public void OnTriggerExpired()
         {
-            if (_st.BreakArmed)
-                DisarmBreak("expired");
+            _st.DisarmReason = "expired";
+            Disarm();
         }
-
-        #region Box construction
 
         private void RollDay(DateTime sessionDate)
         {
@@ -341,303 +309,113 @@ namespace BreakBoxCore
             _st.TradesToday = 0;
         }
 
-        // Which accumulation slot does this bar belong to? Returns long.MinValue
-        // when the bar is outside any slot the current source cares about (e.g.
-        // outside the IB window), which closes the open accumulator.
-        private long SlotOf(BbBar bar, int secs)
+        private void Disarm()
         {
-            int openSecs = BbMath.HhmmToSecs(_cfg.SessionOpenHhmm);
-
-            if (_cfg.BoxSource == BbBoxSource.PriorPeriod)
-            {
-                if (_cfg.HtfMinutes < 1)
-                    return long.MinValue;
-                // Minutes since the most recent session open, on a wrapping
-                // clock. Anchoring on the session open (not on midnight) is what
-                // makes a 240-minute slot here agree with NT8's own 4H bar.
-                int delta = secs - openSecs;
-                if (delta < 0) delta += 24 * 3600;
-                long dayKey = bar.Time.AddSeconds(-delta).Date.Ticks;
-                return dayKey + delta / (_cfg.HtfMinutes * 60);
-            }
-
-            if (_cfg.BoxSource == BbBoxSource.InitialBalance)
-            {
-                int ibStart = BbMath.HhmmToSecs(_cfg.IbStartHhmm);
-                int ibEnd = (ibStart + _cfg.IbMinutes * 60) % (24 * 3600);
-                if (!BbMath.InWindow(secs, ibStart, ibEnd))
-                    return long.MinValue;
-                return bar.Time.Date.Ticks;
-            }
-
-            // PriorSession: one slot per ETH session, keyed by the date the
-            // session STARTED on.
-            int close = BbMath.HhmmToSecs(_cfg.SessionCloseHhmm);
-            int off = secs - close;
-            if (off < 0) off += 24 * 3600;
-            return bar.Time.AddSeconds(-off).Date.Ticks;
+            _st.Armed = false;
+            _st.ArmDir = 0;
+            _st.ArmTriggerPx = 0.0;
+            _st.TriggerArmedBars = 0;
         }
 
-        private void Accumulate(BbBar bar, int secs, double atr, bool atrWarm)
+        #region Lifecycle
+
+        private void Lifecycle(BbBar bar, double atr)
         {
-            long slot = SlotOf(bar, secs);
-
-            if (slot != _st.AccSlot)
-            {
-                if (_st.AccOpen)
-                    Seal(atr, atrWarm);
-                _st.AccSlot = slot;
-                _st.AccOpen = slot != long.MinValue;
-                _st.AccHigh = double.NaN;
-                _st.AccLow = double.NaN;
-                _st.AccStart = bar.Time;
-            }
-
-            if (!_st.AccOpen)
+            double hi, lo;
+            bool full = WindowRange(out hi, out lo);
+            Push(bar);
+            if (!full)
                 return;
 
-            if (double.IsNaN(_st.AccHigh) || bar.High > _st.AccHigh) _st.AccHigh = bar.High;
-            if (double.IsNaN(_st.AccLow) || bar.Low < _st.AccLow) _st.AccLow = bar.Low;
+            PushSample(hi - lo);
+            Form(bar, hi, lo);
         }
 
-        private void Seal(double atr, bool atrWarm)
+        // MAX(High,N)[1] − MIN(Low,N)[1]: the window ENDS one bar back, because
+        // it is read BEFORE the current bar is pushed.
+        private bool WindowRange(out double hi, out double lo)
         {
-            if (double.IsNaN(_st.AccHigh) || double.IsNaN(_st.AccLow))
-                return;
+            hi = 0.0;
+            lo = 0.0;
+            if (_st.WinFilled < _st.WinHigh.Length)
+                return false;
 
-            double range = _st.AccHigh - _st.AccLow;
-            bool valid = atrWarm && atr > 0.0
-                         && range >= _cfg.MinBoxRangeAtr * atr
-                         && range <= _cfg.MaxBoxRangeAtr * atr;
-
-            _st.Box = new BbBox
+            hi = double.MinValue;
+            lo = double.MaxValue;
+            for (int i = 0; i < _st.WinHigh.Length; i++)
             {
-                High = _st.AccHigh,
-                Low = _st.AccLow,
-                AnchorStart = _st.AccStart,
-                AnchorEnd = DateTime.MinValue,
-                Valid = valid,
-                Id = _st.NextBoxId++
-            };
+                if (_st.WinHigh[i] > hi) hi = _st.WinHigh[i];
+                if (_st.WinLow[i] < lo) lo = _st.WinLow[i];
+            }
+            return true;
+        }
+
+        private void Push(BbBar bar)
+        {
+            _st.WinHigh[_st.WinIdx] = bar.High;
+            _st.WinLow[_st.WinIdx] = bar.Low;
+            _st.WinIdx = (_st.WinIdx + 1) % _st.WinHigh.Length;
+            if (_st.WinFilled < _st.WinHigh.Length)
+                _st.WinFilled++;
+        }
+
+        private void PushSample(double range)
+        {
+            _st.Samples[_st.SampleIdx] = range;
+            _st.SampleIdx = (_st.SampleIdx + 1) % _st.Samples.Length;
+            if (_st.SampleFilled < _st.Samples.Length)
+                _st.SampleFilled++;
+        }
+
+        // Nearest-rank percentile over the filled part of the ring.
+        // ponytail: sorts a copy every bar — 200 samples is ~1600 comparisons on
+        // a 30s bar. Replace with an order-statistic structure only if a profiler
+        // ever names it.
+        private double Percentile(double pct)
+        {
+            int n = _st.SampleFilled;
+            if (n < 1)
+                return double.NaN;
+
+            double[] copy = new double[n];
+            Array.Copy(_st.Samples, copy, n);
+            Array.Sort(copy);
+
+            double p = pct < 0.0 ? 0.0 : (pct > 100.0 ? 100.0 : pct);
+            int rank = (int)Math.Ceiling(p / 100.0 * n) - 1;
+            if (rank < 0) rank = 0;
+            if (rank >= n) rank = n - 1;
+            return copy[rank];
+        }
+
+        private void Form(BbBar bar, double hi, double lo)
+        {
+            double thr = Percentile(_cfg.BoxRangePctile);
+            bool candidate = !double.IsNaN(thr) && (hi - lo) <= thr;
+
+            if (!candidate)
+            {
+                _st.CandOpen = false;
+                _st.CandBars = 0;
+                return;
+            }
+
+            if (!_st.CandOpen)
+            {
+                _st.CandOpen = true;
+                _st.CandBars = 1;
+            }
+            else _st.CandBars++;
+
+            _st.CandHigh = hi;
+            _st.CandLow = lo;
         }
 
         #endregion
 
-        #region Break engine
-
-        private BbAction TryBreak(BbBar bar)
+        private static string F(double v)
         {
-            BbAction a = default(BbAction);
-            a.Fire = false;
-            a.Why = "none";
-
-            double tick = _cfg.TickSize;
-            double buf = _cfg.BreakBufferTicks * tick;
-            BbBox box = _st.Box;
-
-            // Already armed: the trigger stands, the shell holds a working stop
-            // order. Nothing to fire again.
-            if (_st.BreakArmed)
-                return a;
-
-            bool upBreak = _cfg.RequireCloseOutside ? bar.Close > box.High : bar.High > box.High;
-            bool downBreak = _cfg.RequireCloseOutside ? bar.Close < box.Low : bar.Low < box.Low;
-
-            // This edge's break was already taken and price has not been back
-            // inside since. Re-arming here is the bug that turns one expired
-            // trigger into a fresh trigger on every subsequent bar.
-            if (upBreak && _st.BreakSpentDir > 0) upBreak = false;
-            if (downBreak && _st.BreakSpentDir < 0) downBreak = false;
-
-            if (upBreak && _cfg.AllowLong)
-            {
-                // The trigger sits beyond the BREAK BAR's extreme, not beyond
-                // the box edge: on the bar that closes 12 points through the
-                // level, a trigger at edge+1 tick is already deep inside the
-                // market and fills instantly at whatever the next print is.
-                double trig = BbMath.RoundToTick(Math.Max(bar.High, box.High) + buf, tick);
-                ArmBreak(+1, trig);
-                a.Fire = true; a.Dir = +1; a.Engine = BbEntryEngine.Break;
-                a.TriggerPx = trig; a.IsLimit = false; a.Why = "break_up";
-            }
-            else if (downBreak && _cfg.AllowShort)
-            {
-                double trig = BbMath.RoundToTick(Math.Min(bar.Low, box.Low) - buf, tick);
-                ArmBreak(-1, trig);
-                a.Fire = true; a.Dir = -1; a.Engine = BbEntryEngine.Break;
-                a.TriggerPx = trig; a.IsLimit = false; a.Why = "break_dn";
-            }
-
-            if (a.Fire)
-            {
-                a.SignalBarHigh = bar.High;
-                a.SignalBarLow = bar.Low;
-            }
-            return a;
-        }
-
-        private void ArmBreak(int dir, double trig)
-        {
-            _st.BreakArmed = true;
-            _st.BreakDir = dir;
-            _st.BreakTriggerPx = trig;
-            _st.BreakArmedBars = 0;
-            _st.BreakSpentDir = dir;
-        }
-
-        private void DisarmBreak(string why)
-        {
-            _st.BreakArmed = false;
-            _st.BreakDir = 0;
-            _st.BreakTriggerPx = 0.0;
-            _st.BreakArmedBars = 0;
-            _st.DisarmReason = why;
-        }
-
-        // Has price closed back inside the box, killing the break thesis?
-        private bool BackInside(BbBar bar)
-        {
-            BbBox box = _st.Box;
-            if (box == null) return false;
-            return _st.BreakDir > 0 ? bar.Close < box.High : bar.Close > box.Low;
-        }
-
-        private static bool InsideBox(BbBar bar, BbBox box)
-        {
-            return box != null && bar.Close <= box.High && bar.Close >= box.Low;
-        }
-
-        public bool BreakArmed { get { return _st.BreakArmed; } }
-        public double BreakTriggerPx { get { return _st.BreakTriggerPx; } }
-        public int BreakDir { get { return _st.BreakDir; } }
-        public string LastDisarmReason { get { return _st.DisarmReason; } }
-
-        #endregion
-
-        #region Retrace engine
-
-        // Tracks how far price has travelled beyond a box edge and whether that
-        // excursion has qualified as a real extension. Runs on EVERY bar,
-        // including while positioned, so the state is continuous.
-        private void TrackExcursion(BbBar bar, double atr)
-        {
-            BbBox box = _st.Box;
-
-            if (_st.ExtDir == 0)
-            {
-                if (bar.Close > box.High) StartExcursion(+1, box.High, bar.High);
-                else if (bar.Close < box.Low) StartExcursion(-1, box.Low, bar.Low);
-                // Fall through and qualify on THIS bar. A single explosive bar
-                // that leaves the box by 2 ATR and closes there is the textbook
-                // extension; deferring the check to the next bar means the one
-                // move most worth fading never qualifies, because by then the
-                // excursion's best price is already history.
-                Qualify(atr);
-                return;
-            }
-
-            _st.ExtBars++;
-
-            // Aborted: back through the far edge is a range traversal, not a
-            // pullback to the level we broke.
-            if (_cfg.RetraceAbortOnFarSide)
-            {
-                bool through = _st.ExtDir > 0 ? bar.Close < box.Low : bar.Close > box.High;
-                if (through) { ClearExcursion(); return; }
-            }
-
-            if (_st.ExtBars > _cfg.RetraceMaxBars)
-            {
-                ClearExcursion();
-                return;
-            }
-
-            double ext = _st.ExtDir > 0 ? bar.High : bar.Low;
-            if ((ext - _st.ExtBest) * _st.ExtDir > 0.0)
-                _st.ExtBest = ext;
-
-            Qualify(atr);
-        }
-
-        private void Qualify(double atr)
-        {
-            if (_st.ExtDir == 0 || _st.ExtQualified)
-                return;
-            if ((_st.ExtBest - _st.ExtEdge) * _st.ExtDir >= _cfg.ExtensionAtr * atr)
-                _st.ExtQualified = true;
-        }
-
-        private void StartExcursion(int dir, double edge, double ext)
-        {
-            _st.ExtDir = dir;
-            _st.ExtEdge = edge;
-            _st.ExtBest = ext;
-            _st.ExtQualified = false;
-            _st.ExtBars = 0;
-        }
-
-        private void ClearExcursion()
-        {
-            _st.ExtDir = 0;
-            _st.ExtEdge = 0.0;
-            _st.ExtBest = double.NaN;
-            _st.ExtQualified = false;
-            _st.ExtBars = 0;
-        }
-
-        private BbAction TryRetrace(BbBar bar, double atr)
-        {
-            BbAction a = default(BbAction);
-            a.Fire = false;
-            a.Why = "none";
-
-            if (_st.ExtDir == 0 || !_st.ExtQualified)
-                return a;
-
-            // The bar that OPENED the excursion may not fire its own retrace.
-            // Its low (on an up-move) is by construction near the edge it just
-            // left, so without this every extension bar is also a retrace
-            // signal — entering at the edge on the way OUT, which is the exact
-            // opposite of the model.
-            if (_st.ExtBars < 1)
-                return a;
-
-            int dir = _st.ExtDir;
-            if (dir > 0 && !_cfg.AllowLong) return a;
-            if (dir < 0 && !_cfg.AllowShort) return a;
-
-            // The retrace is live once price has come back to within one tick of
-            // the edge. We do NOT wait for a touch of the limit price itself —
-            // that is the order's job. Firing when the bar's range reaches back
-            // to the edge is what puts the limit there in time to be filled.
-            double tick = _cfg.TickSize;
-            double reach = dir > 0 ? bar.Low : bar.High;
-            if ((reach - _st.ExtEdge) * dir > atr * 0.25)
-                return a;                       // still too far out to place the order usefully
-
-            double limitPx = BbMath.RoundToTick(_st.ExtEdge - dir * _cfg.RetraceOffsetTicks * tick, tick);
-
-            a.Fire = true;
-            a.Dir = dir;
-            a.Engine = BbEntryEngine.Retrace;
-            a.TriggerPx = limitPx;
-            a.IsLimit = true;
-            a.SignalBarHigh = bar.High;
-            a.SignalBarLow = bar.Low;
-            a.Why = dir > 0 ? "retrace_up" : "retrace_dn";
-            return a;
-        }
-
-        public bool RetraceQualified { get { return _st.ExtDir != 0 && _st.ExtQualified; } }
-
-        #endregion
-
-        private BbAction Stamp(BbAction a)
-        {
-            a.BoxHigh = _st.Box.High;
-            a.BoxLow = _st.Box.Low;
-            a.BoxId = _st.Box.Id;
-            return a;
+            return v.ToString("0.##", CultureInfo.InvariantCulture);
         }
     }
 }

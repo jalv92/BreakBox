@@ -39,7 +39,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private Grid _panelRoot;
         private TextBlock _statusText, _atrText, _windowText, _hudPnl, _hudTrades, _hudBox;
-        private Button _autoBtn, _breakBtn, _retraceBtn, _buyBtn, _sellBtn, _lockBtn;
+        private Button _autoBtn, _breakBtn, _buyBtn, _sellBtn, _lockBtn;
         private readonly Button[] _riskBtns = new Button[3];
         private readonly Button[] _slBtns = new Button[5];
         private static readonly double[] RiskLevels = { 0.5, 1.0, 1.5 };
@@ -95,14 +95,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Paint(_breakBtn, _uiBreakOn);
                     BuildConfigs();
                 });
-                _retraceBtn = Toggle("Retrace", _uiRetraceOn, delegate
-                {
-                    _uiRetraceOn = !_uiRetraceOn;
-                    Paint(_retraceBtn, _uiRetraceOn);
-                    BuildConfigs();
-                });
                 engines.Children.Add(_breakBtn);
-                engines.Children.Add(_retraceBtn);
                 rows.Children.Add(engines);
 
                 // --- Row: direction gates
