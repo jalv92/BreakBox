@@ -17,6 +17,8 @@ public static class CloudTests
         TokenRestoreOnExpiryAndRejection();
         GoldCandleGatesLong();
         GoldCandleGatesShort();
+        TriggerAndTokenOwnership();
+        CanTradeBoundaryAndCooldown();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -485,5 +487,116 @@ public static class CloudTests
         a = c.OnBar(B(98.9, 99.2, 98.3, 98.35), 36000, eF, eS, eT, atr, true, true, false);
         T.Check(!a.Fire, "a 1.30-point leg misses the floor, short");
         T.Check(st.Gate.Block == "leg", "leg, short (" + st.Gate.Block + ")");
+    }
+
+    private static void TriggerAndTokenOwnership()
+    {
+        T.Section("Cloud — the trigger, and who spends the token");
+
+        const double eF = 101.0, eS = 100.5, eT = 99.0, atr = 4.0;
+        var cfg = GateCfg();
+
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, +1, 100.0, eT);
+        var a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(a.Fire, "the qualifying bar fires");
+        // A STOP one tick beyond the signal bar's high. Both observed fills were
+        // WORSE than the signal — that is a stop being taken out, not a limit
+        // being hit, and a limit here is a different model that wins the
+        // mean-reverting cases and loses every real continuation.
+        T.CheckClose(a.TriggerPx, 103.25, "trigger sits one tick above the signal bar's high");
+        T.Check(!a.IsLimit, "the cloud entry is a stop, not a limit");
+        T.Check(a.Engine == BbEntryEngine.Cloud, "stamped as the cloud engine");
+        T.CheckClose(a.SignalBarHigh, 103.0, "signal bar high feeds the Candle stop");
+        T.CheckClose(a.SignalBarLow, 101.0, "signal bar low feeds the Candle stop");
+        // §4.1: the panel must not read box fields on a cloud action, so they
+        // are zeroed rather than left carrying whatever the struct had.
+        T.CheckClose(a.BoxHigh, 0.0, "no box high on a cloud action");
+        T.CheckClose(a.BoxLow, 0.0, "no box low on a cloud action");
+        T.CheckInt(a.BoxId, 0, "no box id on a cloud action");
+
+        // The action was RETURNED, not accepted. The shell may still refuse it
+        // (§4.1 suppression, qty < 1, a platform rejection), so OnBar must not
+        // have spent anything.
+        T.Check(st.Armed, "returning an action does not consume the token");
+        T.CheckClose(st.Ext, 100.0, "and it does not forget the pullback extreme");
+
+        c.OnEntryFilled();
+        T.Check(!st.Armed, "the FILL consumes the token");
+        T.CheckInt(st.BarsSinceLastArm, 0, "and starts the cooldown");
+
+        // Short mirror: one tick BELOW the signal bar's low.
+        st = new BbCloudState(); c = LiveToken(cfg, st, -1, 100.0, 101.0);
+        a = c.OnBar(B(98.8, 99.0, 97.0, 97.1), 36000, 99.0, 99.5, 101.0, atr, true, true, false);
+        T.Check(a.Fire, "the short fires");
+        T.CheckClose(a.TriggerPx, 96.75, "short trigger sits one tick below the signal bar's low");
+        T.Check(a.Why == "cloud_short", "and says which engine and side it came from");
+
+        // Suppressed by an open position: no action, and the token survives for
+        // the next opportunity instead of being burned by a bar we could not act
+        // on anyway.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, true);
+        T.Check(!a.Fire, "positioned suppresses the trigger");
+        T.Check(st.Armed, "and leaves the token intact");
+        T.Check(st.Gate.Block == "in trade", "ladder: in trade (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 3, "in trade sits at depth 3");
+
+        // Suppressed by AUTO-TRADE off / lockout / outside the window.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, false, false);
+        T.Check(!a.Fire, "canTrade == false suppresses the trigger");
+        T.Check(st.Armed, "and leaves the token intact");
+        T.Check(st.Gate.Block == "auto-trade", "ladder: auto-trade (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 4, "auto-trade sits at depth 4");
+    }
+
+    private static void CanTradeBoundaryAndCooldown()
+    {
+        T.Section("Cloud — MinBarsBetween, and ten minutes with AUTO-TRADE off");
+
+        const double eF = 101.0, eS = 100.5, eT = 99.0, atr = 4.0;
+        var cfg = GateCfg();                    // MinBarsBetween = 6
+
+        // Cooldown: the counter ticks at the top of the bar, so a state seeded
+        // at 4 reads 5 on this bar and 6 on the next.
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, +1, 100.0, eT);
+        st.BarsSinceLastArm = 4;
+        var a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a qualifying bar inside the cooldown does not fire");
+        T.Check(st.Gate.Block == "cooldown", "ladder: cooldown (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 6, "cooldown sits at depth 6");
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36060, eF, eS, eT, atr, true, true, false);
+        T.Check(a.Fire, "and fires on the bar the cooldown expires");
+
+        // The pullback-age floor: the touch bar itself can never fire (§5.2
+        // step 3), and MinPullback is the floor above it.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        st.AgeBars = 0; cfg.MinPullback = 3;
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000, eF, eS, eT, atr, true, true, false);
+        T.Check(!a.Fire, "a token younger than MinPullback does not fire");
+        T.Check(st.Gate.Block == "pullback age", "ladder: pullback age (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 5, "pullback age sits at depth 5");
+        cfg.MinPullback = 1;
+
+        // §5.2 step 1b — the boundary that matters. Five bars with AUTO-TRADE
+        // off must age the token and the cooldown exactly as if we were
+        // trading; anything else means re-enabling resumes from stale state and
+        // the first live bar is evaluated against a ten-minute-old picture.
+        st = new BbCloudState(); c = LiveToken(cfg, st, +1, 100.0, eT);
+        for (int i = 0; i < 5; i++)
+        {
+            a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000 + 30 * i, eF, eS, eT, atr, true, false, false);
+            T.Check(!a.Fire, "blackout bar " + (i + 1) + " does not fire");
+        }
+        T.CheckInt(st.RegimeLatched, +1, "the latch survived the blackout");
+        T.Check(st.Armed, "the token survived the blackout");
+        T.CheckInt(st.AgeBars, 8, "the token kept ageing while we could not trade");
+        T.CheckInt(st.BarsSinceLastArm, 104, "and so did the cooldown");
+
+        a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36150, eF, eS, eT, atr, true, true, false);
+        T.Check(a.Fire, "re-enabling trades the very next qualifying bar");
+        T.CheckInt(st.AgeBars, 9, "with no gap in the token's age");
     }
 }

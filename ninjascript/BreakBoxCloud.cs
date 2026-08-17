@@ -205,17 +205,73 @@ namespace BreakBoxCore
                 return a;
             }
 
-            // ---- Step 5 (§5.2). Task 25 inserts the suppression and cooldown
-            // gates (depths 3-6) directly ABOVE this line; the bar gates keep
-            // depths 7-11 either way, so the panel's row labels never renumber.
+            // ---- Step 5's preconditions. `positioned` and `canTrade` suppress
+            // THIS section and nothing else — steps 2-4 above already ran, so
+            // the regime, the token's age and its extreme are current the moment
+            // trading is re-enabled.
+            if (positioned)
+            {
+                _st.Gate.Set("in trade", "position open or entry working", 3);
+                return a;
+            }
+            if (!canTrade)
+            {
+                _st.Gate.Set("auto-trade", "off, locked out or outside the window", 4);
+                return a;
+            }
+            // The touch bar itself has AgeBars == 0 by construction, which is
+            // §2's "never on the touch"; MinPullback is the dial above it.
+            if (_st.AgeBars < _cfg.MinPullback)
+            {
+                _st.Gate.Set("pullback age", _st.AgeBars + " bars, need " + _cfg.MinPullback, 5);
+                return a;
+            }
+            // Throttle, not mute. A runaway trend that never touches eS again
+            // produces one trade; this stops the OTHER failure, a cluster of
+            // near-identical entries inside one pullback.
+            if (_st.BarsSinceLastArm < _cfg.MinBarsBetween)
+            {
+                _st.Gate.Set("cooldown", _st.BarsSinceLastArm + " bars since the last arm, need "
+                                         + _cfg.MinBarsBetween, 6);
+                return a;
+            }
+
+            // ---- Step 5 (§5.2), the bar gates.
             if (!GoldCandle(bar, _st.RegimeLatched, eF, atr))
                 return a;                       // GoldCandle wrote the ladder
 
-            // Step 6 — the trigger price, the signal bar and the token's fate —
-            // is Task 25. All this bar can say yet is that the candle qualifies.
+            // ---- Step 6 (§5.2). A STOP beyond the signal bar's extreme: both
+            // observed fills were WORSE than the signal, which is a stop being
+            // taken out. TriggerOffsetTicks is a G dial (§2.3) because the
+            // measurement cannot tell "at the high" from "high + 1 tick".
+            // `dir` was already bound to _st.RegimeLatched back at step 3.
+            double tick = _cfg.TickSize;
+            double trig = dir > 0
+                ? BbMath.RoundToTick(bar.High + _cfg.TriggerOffsetTicks * tick, tick)
+                : BbMath.RoundToTick(bar.Low - _cfg.TriggerOffsetTicks * tick, tick);
+
             _st.Gate.Clear();
+            _st.TriggerArmedBars = 0;
+
             a.Fire = true;
-            a.Dir = _st.RegimeLatched;
+            a.Dir = dir;
+            a.Engine = BbEntryEngine.Cloud;
+            a.TriggerPx = trig;
+            a.IsLimit = false;
+            a.SignalBarHigh = bar.High;
+            a.SignalBarLow = bar.Low;
+            // §4.1: there is no box behind a cloud action, and a stale box id
+            // would render on the panel as if there were.
+            a.BoxHigh = 0.0;
+            a.BoxLow = 0.0;
+            a.BoxId = 0;
+            a.Why = dir > 0 ? "cloud_long" : "cloud_short";
+
+            // The token is NOT spent here. The shell can still suppress this
+            // action (§4.1), size it to zero, or have it rejected by the broker
+            // — and a trade that never happened must not cost a token. Only
+            // OnEntryFilled spends it; OnTriggerExpired and OnEntryRejected
+            // restore it.
             return a;
         }
 
@@ -360,15 +416,16 @@ namespace BreakBoxCore
         }
 
         // The shell calls this when the entry actually FILLS — not when it is
-        // submitted. A fill is the ONLY thing that spends a token for good.
-        // BarsSinceLastArm is deliberately untouched: step 6 zeroed it at consume
-        // time, and restarting the cooldown here would silently lengthen it by
-        // however many bars the stop order rested.
+        // submitted. A fill is the ONLY thing that spends a token for good, and
+        // it is also the ONLY thing that starts the cooldown: BarsSinceLastArm
+        // resets HERE, not on submit, so a trigger that expires or is rejected
+        // (RestoreToken, below) leaves the cooldown exactly where it was.
         public void OnEntryFilled()
         {
             _st.Armed = false;
             _st.Ext = double.NaN;
             _st.AgeBars = 0;
+            _st.BarsSinceLastArm = 0;
             _st.TriggerArmedBars = 0;
             _killWhy = "filled";
         }
