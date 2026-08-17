@@ -891,6 +891,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            // A stop entry is a BREAKOUT: it has to rest on the far side of the
+            // market. Calculate.OnBarClose means this level was measured on the
+            // bar that just closed, so in a continuing move price can already be
+            // through it by the time the order is accepted — and NT8 refuses a
+            // sell stop above the market (or a buy stop below it) with a modal
+            // error that also stalls Playback until it is dismissed. SubmitStop
+            // has carried this guard since v1; the entry path never did.
+            // Declining is the honest action, not chasing: if price is already
+            // past the level, the move we wanted to join happened without us.
+            if (!a.IsLimit)
+            {
+                double side = a.Dir > 0 ? GetCurrentAsk() : GetCurrentBid();
+                if (BbMath.StopThroughMarket(a.TriggerPx, side, a.Dir))
+                {
+                    OnEntryRejected(a.Engine, "trigger_through_market");
+                    return;
+                }
+            }
+
             string sig = a.Dir > 0 ? SigLong : SigShort;
 
             // Written BEFORE the submit: NT8 can deliver the fill in-stack.
@@ -918,6 +937,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 DrawTag(Draw.Text(this, Tag("sig"), (a.Dir > 0 ? "BUY " : "SELL ") + a.Why, 0,
                                   a.Dir > 0 ? Low[0] - 4 * TickSize : High[0] + 4 * TickSize,
                                   a.Dir > 0 ? Brushes.LimeGreen : Brushes.OrangeRed));
+        }
+
+        // The ONE place an entry becomes a live trade. Extracted because it has
+        // two legitimate callers: the ordinary full fill, and the PARTIAL fill
+        // that CancelWorkingEntry and OnOrderUpdate find when a trigger is
+        // pulled or rejected after some contracts already traded. Both have to
+        // produce a bracket — a position without one is the most expensive state
+        // this strategy can reach, and IgnoreAllErrors means nobody would say so.
+        //
+        // The _inTrade guard makes it idempotent: cancelling a part-filled order
+        // can race the remainder filling, and adopting twice would open a second
+        // bracket over the same position.
+        private void AdoptEntryFill(double px, int filled, DateTime time)
+        {
+            if (filled < 1 || _inTrade)
+                return;
+
+            _entryPending = false;
+            _entryFromEngine = false;
+            _entryBarsWaiting = 0;
+            _inTrade = true;
+            // What actually traded, not what was asked for: on a partial the
+            // bracket, the panel and the journal all have to agree with the
+            // position, and _qty is what they read.
+            _qty = filled;
+            _entryFillPx = px;
+            _entryTime = time;
+            EngineLog("filled " + (_dir > 0 ? "long" : "short") + " " + filled
+                      + " @ " + px.ToString("0.00", CultureInfo.InvariantCulture));
+            // The fill is what really spends the token/edge, and it belongs
+            // to the owner (§4.1). Routing this unconditionally to the box
+            // engine would spend the WRONG engine's memory on a cloud fill —
+            // the box would count a trade it never took, and the cloud's
+            // token/cooldown would never reset.
+            if (_owningEngine == BbEntryEngine.Cloud) { _cloud.OnEntryFilled(); _cloudFilledToday++; }
+            else { _engine.OnEntryFilled(); _boxFilledToday++; }
+            _tradesToday++;
+            OpenBracket(px, filled);
         }
 
         // B6/B7 — ONE clock, and it belongs to the engine. The shell mirrors:
@@ -963,6 +1020,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (!_entryPending)
                 return;
+
+            // A PART-FILLED entry is a live position, and the guard below could
+            // not see one: it only cancels an order in Working/Accepted, and
+            // PartFilled is neither — it then dropped the reference. Since
+            // OnExecutionUpdate ignores anything that is not OrderState.Filled,
+            // those contracts got no stop and no target while the shell believed
+            // it was flat, so nothing would ever close them. Adopt what traded,
+            // cancel the remainder. No refund to the engine: the trade happened.
+            if (_entryOrder != null && _entryOrder.Filled > 0 && !_inTrade)
+            {
+                Order po = _entryOrder;
+                _entryOrder = null;
+                EngineLog("disarm: " + why + " — adopting " + po.Filled + " already filled");
+                CancelOrder(po);
+                AdoptEntryFill(po.AverageFillPrice, po.Filled, Time[0]);
+                return;
+            }
+
             EngineLog("disarm: " + why);
             _entryPending = false;
             _entryBarsWaiting = 0;
@@ -1160,23 +1235,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // this arrives, another submit may already have flipped the flag.
             if ((sig == SigLong || sig == SigShort) && execution.Order.OrderState == OrderState.Filled)
             {
-                _entryPending = false;
-                _entryFromEngine = false;
-                _entryBarsWaiting = 0;
-                _inTrade = true;
-                _entryFillPx = price;
-                _entryTime = time;
-                EngineLog("filled " + (_dir > 0 ? "long" : "short") + " " + execution.Order.Filled
-                          + " @ " + price.ToString("0.00", CultureInfo.InvariantCulture));
-                // The fill is what really spends the token/edge, and it belongs
-                // to the owner (§4.1). Routing this unconditionally to the box
-                // engine would spend the WRONG engine's memory on a cloud fill —
-                // the box would count a trade it never took, and the cloud's
-                // token/cooldown would never reset.
-                if (_owningEngine == BbEntryEngine.Cloud) { _cloud.OnEntryFilled(); _cloudFilledToday++; }
-                else { _engine.OnEntryFilled(); _boxFilledToday++; }
-                _tradesToday++;
-                OpenBracket(price, execution.Order.Filled);
+                AdoptEntryFill(price, execution.Order.Filled, time);
                 return;
             }
 
@@ -1256,6 +1315,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                     FlattenAll("leg_rejected");
                 else if (sig == SigLong || sig == SigShort)
                 {
+                    // Same trap as CancelWorkingEntry: a rejection can land on an
+                    // order that already traded part of its quantity.
+                    if (order.Filled > 0 && !_inTrade)
+                    {
+                        AdoptEntryFill(averageFillPrice, filled, time);
+                        return;
+                    }
                     _entryPending = false;
                     if (_entryFromEngine)
                     {

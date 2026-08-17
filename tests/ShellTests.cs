@@ -17,6 +17,32 @@ public static class ShellTests
         BarSecondsEstimate();
         GateReport();
         EntryWindowAndBudget();
+        StopSideOfMarket();
+    }
+
+    // The guard that stops NT8 rejecting our own entries. A stop entry is a
+    // breakout: it must rest on the FAR side of the market. Calculate.OnBarClose
+    // prices it off the bar that just closed, so in a continuing move price can
+    // already be through the level — which is how a live run produced
+    // "SellShort 3 StopMarket @ 29907.75 ... can't be placed above the market".
+    private static void StopSideOfMarket()
+    {
+        T.Section("Stop entries never submit on the illegal side");
+
+        // LONG: a buy stop is legal ABOVE the offer.
+        T.Check(!BbMath.StopThroughMarket(29910.00, 29900.00, 1), "buy stop above the offer is legal");
+        T.Check(BbMath.StopThroughMarket(29890.00, 29900.00, 1), "buy stop below the offer is refused");
+        T.Check(BbMath.StopThroughMarket(29900.00, 29900.00, 1), "buy stop AT the offer is refused");
+
+        // SHORT: a sell stop is legal BELOW the bid. This is the case that fired.
+        T.Check(!BbMath.StopThroughMarket(29890.00, 29900.00, -1), "sell stop below the bid is legal");
+        T.Check(BbMath.StopThroughMarket(29907.75, 29900.00, -1), "sell stop above the bid is refused");
+        T.Check(BbMath.StopThroughMarket(29900.00, 29900.00, -1), "sell stop AT the bid is refused");
+
+        // A quiet feed must not veto every entry — the platform arbitrates then.
+        T.Check(!BbMath.StopThroughMarket(29890.00, double.NaN, -1), "no quote does not refuse");
+        T.Check(!BbMath.StopThroughMarket(29890.00, 0.0, -1), "a zero quote does not refuse");
+        T.Check(!BbMath.StopThroughMarket(29890.00, 29900.00, 0), "a directionless action is not judged here");
     }
 
     // §4.2. One report per engine, never shared. Its whole job is that the panel

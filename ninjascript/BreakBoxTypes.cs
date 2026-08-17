@@ -159,6 +159,24 @@ namespace BreakBoxCore
 
     public static class BbMath
     {
+        // True when a STOP at triggerPx sits on the side of the market the
+        // exchange will not accept: a BUY stop at or below the offer, a SELL
+        // stop at or above the bid. NT8 rejects those with a modal error that
+        // also stalls Playback, and the sign is exactly the kind of thing that
+        // reads correct while being backwards — so it lives here, with asserts
+        // on it, instead of inline in the order path.
+        //
+        // sidePx is the side that would TRIGGER the stop: the ask for a buy
+        // stop, the bid for a sell stop. An unavailable quote (NaN or <= 0)
+        // answers false: refusing every entry because the feed went quiet is a
+        // worse failure than letting the platform arbitrate one order.
+        public static bool StopThroughMarket(double triggerPx, double sidePx, int dir)
+        {
+            if (dir == 0 || double.IsNaN(sidePx) || double.IsInfinity(sidePx) || sidePx <= 0.0)
+                return false;
+            return (triggerPx - sidePx) * dir <= 0.0;
+        }
+
         // Hand-rolled so every engine rounds identically, and so the test runner
         // rounds the way NT8 will. Instrument.MasterInstrument.RoundToTickSize
         // must NEVER touch a price computed here.
