@@ -199,10 +199,16 @@ namespace BreakBoxCore
 
         // Feed one CLOSED bar. `secs` is its ET seconds-of-day, `sessionDate`
         // the trading day it belongs to (used only for the daily trade counter),
-        // `atr` the warm house ATR, `positioned` whether the shell already holds
-        // a position (the engine still tracks the box and the excursion while
-        // positioned — it just cannot fire).
-        public BbAction OnBar(BbBar bar, int secs, DateTime sessionDate, double atr, bool atrWarm, bool positioned)
+        // `atr` the warm house ATR, `canTrade` whether the shell would accept an
+        // entry at all (auto-trade on, not locked out, indicators warm), and
+        // `positioned` whether it already holds one.
+        //
+        // canTrade suppresses ARMING and FIRING and nothing else (§5.2 step 1b):
+        // the box, the excursion and the trigger clock below it run on every
+        // closed bar regardless, or a flat period leaves a hole in the state and
+        // re-enabling resumes from a stale box.
+        public BbAction OnBar(BbBar bar, int secs, DateTime sessionDate, double atr, bool atrWarm,
+                              bool canTrade, bool positioned)
         {
             BbAction a = default(BbAction);
             a.Fire = false;
@@ -248,7 +254,7 @@ namespace BreakBoxCore
             if (_st.BreakSpentDir != 0 && InsideBox(bar, _st.Box))
                 _st.BreakSpentDir = 0;
 
-            if (positioned || !windowOpen || !budget)
+            if (!canTrade || positioned || !windowOpen || !budget)
                 return a;
 
             if (_cfg.EnableBreak)

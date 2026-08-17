@@ -443,12 +443,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             bool canTrade = _uiAutoTrade && !_lockout && _atr.IsWarm && _e50.IsWarm;
-            var a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm,
+            var a = _engine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, canTrade,
                                   _inTrade || _entryPending);
 
             if (ShowBox) DrawBox();
 
-            if (canTrade && a.Fire && !_inTrade && !_entryPending)
+            // canTrade is no longer re-tested here — the engine owns that
+            // decision now. The position checks stay: SubmitEntry while
+            // positioned is the one mistake that costs real money, and it is
+            // cheap to refuse twice.
+            if (a.Fire && !_inTrade && !_entryPending)
                 SubmitEntry(a);
             else if (_entryPending)
                 AgeWorkingEntry();
