@@ -130,8 +130,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private static readonly string[] ViewNames = { "today", "20d", "100t" };
         private TextBlock _equityText, _statsText;
         private Canvas _chart;
-        private WPolyline _equityLine;
-        private WPolygon _equityFill;
+        private WPolyline _equityLine, _equityLineNeg;
+        private WPolygon _equityFill, _equityFillNeg;
         private WLine _zeroLine;
         private ColumnDefinition _wCol, _beCol, _lCol;
         private readonly TextBlock[] _tradeText = new TextBlock[3];
@@ -570,13 +570,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StrokeThickness = 1,
                 StrokeDashArray = new DoubleCollection(new double[] { 2, 3 })
             };
+            // Above zero reads blue, below zero reads red. Rather than split the
+            // curve at every crossing, the SAME geometry is drawn twice and each
+            // copy is clipped to its own side of the zero baseline — so a curve
+            // that crosses shows both colours meeting exactly on the line, and
+            // the clip rects are the only thing an update has to move.
             _equityFill = new WPolygon { Fill = new SolidColorBrush(Color.FromArgb(0x28, 0x00, 0xC8, 0xFF)) };
             _equityLine = new WPolyline { Stroke = OnBrush, StrokeThickness = 1.5 };
-            // Baseline under the fill under the line: the line is the data and
+            _equityFillNeg = new WPolygon { Fill = new SolidColorBrush(Color.FromArgb(0x28, 0xD9, 0x53, 0x4F)) };
+            _equityLineNeg = new WPolyline { Stroke = LossBrush, StrokeThickness = 1.5 };
+            // Baseline under the fills under the lines: the line is the data and
             // must never be the thing that gets covered.
             _chart.Children.Add(_zeroLine);
             _chart.Children.Add(_equityFill);
+            _chart.Children.Add(_equityFillNeg);
             _chart.Children.Add(_equityLine);
+            _chart.Children.Add(_equityLineNeg);
             s.Children.Add(_chart);
 
             _statsText = Small("Waiting for the first bar to close.");
@@ -752,6 +761,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             public readonly string[] Log = new string[3];
             public double[] Pts = new double[0];
             public double ZeroY;
+            // The total as a NUMBER. Colouring off s.Equity meant reading a sign
+            // out of a culture-formatted string, and a culture that renders
+            // negatives in accounting parentheses — ($807.00) — has no leading
+            // '-', so a losing account was painted green.
+            public double EquityTotal;
             public double WinN, BeN, LossN;
             public readonly string[] TradeText = new string[3];
             public readonly double[] TradeBar = new double[3];
@@ -910,6 +924,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             s.ZeroY = zeroY;
 
             double total = cum.Length == 0 ? 0.0 : cum[cum.Length - 1];
+            s.EquityTotal = total;
             s.Equity = (total >= 0 ? "+" : "") + total.ToString("C2", CultureInfo.CurrentCulture);
 
             double biggest = 1.0;
@@ -1015,7 +1030,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (_equityText != null)
             {
                 _equityText.Text = s.Equity;
-                _equityText.Foreground = s.Equity.StartsWith("-", StringComparison.Ordinal) ? LossBrush : OkBrush;
+                _equityText.Foreground = s.EquityTotal < 0.0 ? LossBrush : OkBrush;
             }
             if (_statsText != null) _statsText.Text = s.Stats;
 
@@ -1025,6 +1040,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 for (int i = 0; i < s.Pts.Length; i += 2)
                     line.Add(new Point(s.Pts[i], s.Pts[i + 1]));
                 _equityLine.Points = line;
+                _equityLineNeg.Points = line;
 
                 // The fill is the same polyline closed down to the zero
                 // baseline, not to the bottom of the box: an underwater segment
@@ -1037,8 +1053,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                     fill.Add(new Point(line[line.Count - 1].X, s.ZeroY));
                 }
                 _equityFill.Points = fill;
-                _zeroLine.Y1 = s.ZeroY;
-                _zeroLine.Y2 = s.ZeroY;
+                _equityFillNeg.Points = fill;
+
+                // Clamped because a Rect with a negative Height throws, and
+                // ZeroY is only as trustworthy as the data behind it.
+                double zy = s.ZeroY < 0.0 ? 0.0 : (s.ZeroY > ChartH ? ChartH : s.ZeroY);
+                var above = new RectangleGeometry(new Rect(0, 0, ChartW, zy));
+                var below = new RectangleGeometry(new Rect(0, zy, ChartW, ChartH - zy));
+                _equityFill.Clip = above;
+                _equityLine.Clip = above;
+                _equityFillNeg.Clip = below;
+                _equityLineNeg.Clip = below;
+
+                _zeroLine.Y1 = zy;
+                _zeroLine.Y2 = zy;
             }
 
             // Star weights, so a zero-count segment collapses instead of
