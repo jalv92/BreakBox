@@ -316,14 +316,17 @@ namespace BreakBoxCore
                 return a;
             }
 
-            // `canTrade` suppresses ARMING only. Everything above it — the
-            // window, the samples, formation, seal, death, the inside-close
-            // reset — has already run on this bar (B2).
-            if (!canTrade)
-            {
-                _st.Gate.Set("auto-trade", "off or locked out", 4);
-                return a;
-            }
+            // `canTrade` USED to sit here too, as a second early gate — which
+            // meant that with orders disabled (the FIRST thing the calibration
+            // protocol does) every bar short-circuited at rung 4 and rungs
+            // 5-10 below (window/budget/armed/break/arms/cooldown) printed a
+            // permanent "=0", indistinguishable from a gate that never fires.
+            // It is now the FINAL veto, checked once the whole ladder below has
+            // run for real — see the comment where it now lives, past
+            // "cooldown". Everything above it — the window, the samples,
+            // formation, seal, death, the inside-close reset — already ran on
+            // this bar regardless (B2); this just extends that same rule to
+            // the entry ladder itself.
 
             if (!BbMath.InWindow(secs, BbMath.HhmmToSecs(_cfg.EntryWindowStartHhmm),
                                        BbMath.HhmmToSecs(_cfg.EntryWindowEndHhmm)))
@@ -385,6 +388,19 @@ namespace BreakBoxCore
                 // would have the panel label whichever fires with the other's
                 // name.
                 _st.Gate.Set("cooldown", (_cfg.BoxArmCooldown - since) + " bars left", 10);
+                return a;
+            }
+
+            // Every real gate has passed — this break would arm and fire. This
+            // is where `canTrade` now lives (see the comment above "window"):
+            // report it at its original rung 4, meaning "this setup would
+            // otherwise have fired", instead of freezing every bar at rung 4
+            // regardless of what the tape actually did. Arm() and the trigger
+            // price below are the arm/fire side-effects B2 exists to keep out
+            // of a session with orders disabled — neither may run past here.
+            if (!canTrade)
+            {
+                _st.Gate.Set("auto-trade", "off or locked out", 4);
                 return a;
             }
 

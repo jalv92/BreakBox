@@ -214,18 +214,19 @@ namespace BreakBoxCore
                 return a;
             }
 
-            // ---- Step 5's preconditions. `positioned` and `canTrade` suppress
-            // THIS section and nothing else — steps 2-4 above already ran, so
-            // the regime, the token's age and its extreme are current the moment
-            // trading is re-enabled.
+            // ---- Step 5's preconditions. `positioned` suppresses THIS section
+            // and nothing else — steps 2-4 above already ran, so the regime,
+            // the token's age and its extreme are current the moment trading is
+            // re-enabled. `canTrade` used to sit here too, as a hard return —
+            // which meant that with orders disabled (the FIRST thing the
+            // calibration protocol does) every bar stopped at this rung and
+            // every gate below it printed a permanent "=0" on the histogram,
+            // indistinguishable from a gate that never fires. It is now the
+            // FINAL veto, checked once the whole chain below has run — see the
+            // comment where it now lives, past GoldCandle.
             if (positioned)
             {
                 _st.Gate.Set("in trade", "position open or entry working", 3);
-                return a;
-            }
-            if (!canTrade)
-            {
-                _st.Gate.Set("auto-trade", "off, locked out or outside the window", 4);
                 return a;
             }
             // The touch bar itself has AgeBars == 0 by construction, which is
@@ -248,6 +249,21 @@ namespace BreakBoxCore
             // ---- Step 5 (§5.2), the bar gates.
             if (!GoldCandle(bar, _st.RegimeLatched, eF, atr))
                 return a;                       // GoldCandle wrote the ladder
+
+            // Every real gate has passed — this bar would fire. `canTrade` is
+            // the veto of last resort: report it HERE, at its original rung 4,
+            // rather than before the ladder ran. That makes "auto-trade" mean
+            // exactly "this setup would otherwise have fired", which is both
+            // the most useful thing it can say and the reason every rung above
+            // is now honest instead of blind. Nothing past this point may run
+            // while it is false — the trigger price and the TriggerArmedBars
+            // reset below are arm/fire side-effects, and letting them run here
+            // would open the same state hole B2 closed on the box engine.
+            if (!canTrade)
+            {
+                _st.Gate.Set("auto-trade", "off, locked out or outside the window", 4);
+                return a;
+            }
 
             // ---- Step 6 (§5.2). A STOP beyond the signal bar's extreme: both
             // observed fills were WORSE than the signal, which is a stop being

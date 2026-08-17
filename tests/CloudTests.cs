@@ -19,6 +19,7 @@ public static class CloudTests
         GoldCandleGatesShort();
         TriggerAndTokenOwnership();
         CanTradeBoundaryAndCooldown();
+        AutoTradeIsAFinalVeto();
     }
 
     private static readonly DateTime Open = new DateTime(2026, 8, 3, 18, 0, 0);
@@ -598,5 +599,44 @@ public static class CloudTests
         a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36150, eF, eS, eT, atr, true, true, false);
         T.Check(a.Fire, "re-enabling trades the very next qualifying bar");
         T.CheckInt(st.AgeBars, 9, "with no gap in the token's age");
+    }
+
+    // Task veto: `canTrade` moved from an early gate at rung 4 to a FINAL veto
+    // checked after the whole ladder runs. These two asserts pin exactly that:
+    // a setup blocked deeper than rung 4 must still report ITS rung with
+    // orders off (the property that was structurally impossible before — the
+    // old code returned at rung 4 before the leg gate ever ran), and a setup
+    // that WOULD fire must suppress every arm/fire side-effect, not just Fire.
+    private static void AutoTradeIsAFinalVeto()
+    {
+        T.Section("Cloud — canTrade is a final veto, not an early gate");
+
+        const double eF = 101.0, eS = 100.5, eT = 99.0, atr = 4.0;
+        var cfg = GateCfg();
+
+        // Same fixture as GoldCandleGatesLong's leg case (depth 11), replayed
+        // with orders off. Before this task, canTrade short-circuited at rung
+        // 4 before "leg" ever ran, so this assert fails against the old code.
+        var st = new BbCloudState();
+        var c = LiveToken(cfg, st, +1, 100.4, eT);
+        var a = c.OnBar(B(101.0, 101.7, 100.8, 101.65), 36000, eF, eS, eT, atr, true, false, false);
+        T.Check(!a.Fire, "still does not fire with orders off");
+        T.Check(st.Gate.Block == "leg", "the leg gate is named, not auto-trade (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 11, "leg keeps its own depth even though canTrade is false");
+
+        // A run of bars that would ALL fire, orders off throughout: the token
+        // must survive and TriggerArmedBars — an arm/fire side-effect — must
+        // stay untouched. Seeding it non-zero makes a silent reset visible.
+        st = new BbCloudState();
+        c = LiveToken(cfg, st, +1, 100.0, eT);
+        st.TriggerArmedBars = 3;
+        for (int i = 0; i < 4; i++)
+        {
+            a = c.OnBar(B(101.2, 103.0, 101.0, 102.9), 36000 + 30 * i, eF, eS, eT, atr, true, false, false);
+            T.Check(!a.Fire, "blocked bar " + (i + 1) + " does not fire with orders off");
+            T.Check(st.Gate.Block == "auto-trade", "and reports auto-trade — this setup would have fired");
+        }
+        T.Check(st.Armed, "no token consumed while orders are off");
+        T.CheckInt(st.TriggerArmedBars, 3, "no arm/fire side-effect ran under the veto");
     }
 }

@@ -27,6 +27,7 @@ public static class BoxTests
         CooldownAndArmCapAcrossExpiries();
         ExpirySpendsAnArmRejectionRefundsIt();
         SecondsScaleToBars();
+        AutoTradeIsAFinalVeto();
     }
 
     private static void SecondsScaleToBars()
@@ -374,6 +375,55 @@ public static class BoxTests
         // mislabelled row on a chart.
         T.CheckInt(BbEngine.GateLadder.Length, 11, "the box ladder has 11 rungs");
         T.Check(BbEngine.GateLadder[10] == "cooldown", "cooldown is its own rung, not sharing 9 with arms");
+    }
+
+    // Task veto: `canTrade` moved from an early gate at rung 4 to a FINAL veto
+    // checked after the whole ladder runs (window/budget/armed/break/arms/
+    // cooldown). Pins the property `ArmingDoesNotSpendTheEdge` already covers
+    // at rung 4 (a firing setup reports auto-trade) PLUS the one that fails
+    // against the pre-veto code: a setup blocked at a DEEPER rung must report
+    // THAT rung with orders off, not freeze at rung 4 before ever reaching it.
+    private static void AutoTradeIsAFinalVeto()
+    {
+        T.Section("Box — canTrade is a final veto, not an early gate");
+
+        var cfg = Cfg();
+        cfg.BoxMeanSamples = 1;
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+        eng.SeedSealedRange(1.0);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)         // seals a valid 100.5 / 99.5 box on bar 6
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box != null && st.Box.Valid, "a valid box exists");
+
+        // Bar 7, orders off: close 100.2 stays INSIDE the box, so this bar
+        // blocks at "break" (rung 8) — a rung the old early-gate canTrade
+        // check never let a bar reach. Before this task every one of these
+        // bars would have reported "auto-trade" regardless of the close.
+        var inside = eng.OnBar(Bar(t, 100.2, 100.3, 100.1, 100.2), Secs(t), t.Date, 2.0, true, false, false);
+        t = t.AddSeconds(30);
+        T.Check(!inside.Fire, "an inside close does not fire");
+        T.Check(st.Gate.Block == "break", "the break gate is named, not auto-trade (" + st.Gate.Block + ")");
+        T.CheckInt(st.Gate.GateDepth, 8, "break keeps its own depth even though canTrade is false");
+        T.CheckInt(st.ArmsUp, 0, "and nothing armed");
+
+        // Bar 8, orders still off: a real close beyond the edge. Every other
+        // rung passes, so THIS is the one case that reports auto-trade — the
+        // setup that would otherwise have fired — and Arm() must not run: no
+        // edge spent, no counter moved, exactly as ArmingDoesNotSpendTheEdge
+        // already pins for the single-bar case.
+        var broke = eng.OnBar(Bar(t, 100.5, 101.25, 100.0, 101.0), Secs(t), t.Date, 2.0, true, false, false);
+        T.Check(!broke.Fire, "a break does not arm while canTrade is false");
+        T.Check(st.Gate.Block == "auto-trade", "and the gate names it (got '" + st.Gate.Block + "')");
+        T.CheckInt(st.Gate.GateDepth, 4, "auto-trade sits at depth 4");
+        T.CheckInt(st.ArmsUp, 0, "no arm was spent — the deeper bar before it didn't open a hole either");
+        T.CheckInt(st.TradesThisBox, 0, "no trade counted");
+        T.Check(!st.Armed, "the engine state never armed");
     }
 
     // The §6.2 half that Task 46 could not assert: every one of these steps
