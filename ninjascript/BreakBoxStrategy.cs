@@ -446,39 +446,95 @@ namespace NinjaTrader.NinjaScript.Strategies
             // what a panel toggle calls: a hash that only tracked the startup
             // parameters would stamp post-toggle trades as identical to
             // pre-toggle ones, which is the contamination the seam exists to
-            // make visible. `risk` is listed and then dropped by Canonical —
-            // listed so the exclusion is legible at the call site too.
+            // make visible.
+            //
+            // EVERY NinjaScriptProperty that changes what is traded belongs in
+            // this list — not a hand-picked subset. (§68 tried "the important
+            // ones" and was still short: TrendLineSec, PullbackMaxSec and a
+            // dozen more cloud/box/stop/target/session dials were missing,
+            // which is worse than no digest — it merges genuinely different
+            // configurations onto one curve while looking authoritative.) The
+            // only two exclusions are `risk` and `qty`: both feed
+            // `q = BaseQuantity * _uiRiskMult`, scaling size without touching
+            // an entry, exit or gate. Both are still listed here and dropped
+            // by Canonical's Excluded array, so the exclusion reads as a
+            // decision, not an oversight. The four Visuals toggles (ShowBox /
+            // ShowLevels / ShowPanel / ShowHud) never reach a trading decision
+            // at all and are not listed anywhere.
             _cfgHash = BbHistory.Hash(BbHistory.Canonical(new List<string>
             {
                 "risk=" + _uiRiskMult.ToString("0.##", CultureInfo.InvariantCulture),
+                "qty=" + BaseQuantity.ToString(CultureInfo.InvariantCulture),
+
                 "cloud=" + (_uiCloudOn ? "1" : "0"),
                 "box=" + (_uiBreakOn ? "1" : "0"),
                 "long=" + (_uiLongOn ? "1" : "0"),
                 "short=" + (_uiShortOn ? "1" : "0"),
+
+                // 02. Box
+                "sopen=" + SessionOpenHhmm.ToString(CultureInfo.InvariantCulture),
+                "boxlb=" + BoxLookbackSec.ToString(CultureInfo.InvariantCulture),
+                "boxminb=" + BoxMinBars.ToString(CultureInfo.InvariantCulture),
+                "boxpct=" + BoxRangePctile.ToString("0.###", CultureInfo.InvariantCulture),
+                "boxn=" + BoxSampleN.ToString(CultureInfo.InvariantCulture),
+                "boxmean=" + BoxMeanSamples.ToString(CultureInfo.InvariantCulture),
+                "boxlo=" + BoxValidLo.ToString("0.###", CultureInfo.InvariantCulture),
+                "boxhi=" + BoxValidHi.ToString("0.###", CultureInfo.InvariantCulture),
+                "boxdead=" + BoxDeadAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "boxage=" + BoxMaxAgeSec.ToString(CultureInfo.InvariantCulture),
+                "boxarms=" + BoxArmsPerEdge.ToString(CultureInfo.InvariantCulture),
+                "boxcool=" + BoxArmCooldownSec.ToString(CultureInfo.InvariantCulture),
+
+                // 03. Engines — TriggerLifeSec is shared: BuildConfigs feeds
+                // the same value into _cfg.TriggerLife (box) AND
+                // _cloudCfg.TriggerLife (cloud), so one key covers both.
+                "trig=" + TriggerLifeSec.ToString(CultureInfo.InvariantCulture),
+                "ribf=" + RibbonFastSec.ToString(CultureInfo.InvariantCulture),
+                "ribs=" + RibbonSlowSec.ToString(CultureInfo.InvariantCulture),
+                "trend=" + TrendLineSec.ToString(CultureInfo.InvariantCulture),
+                "slopelb=" + TrendSlopeSec.ToString(CultureInfo.InvariantCulture),
+                "slopeatr=" + TrendSlopeAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "regmem=" + RegimeMemorySec.ToString(CultureInfo.InvariantCulture),
+                "pbmax=" + PullbackMaxSec.ToString(CultureInfo.InvariantCulture),
+                "pbmin=" + MinPullbackSec.ToString(CultureInfo.InvariantCulture),
+                "cir=" + CloseInRange.ToString("0.###", CultureInfo.InvariantCulture),
+                "minbrange=" + MinBarRangeAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "minleg=" + MinLegAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "minbb=" + MinBarsBetweenSec.ToString(CultureInfo.InvariantCulture),
+                "trigoff=" + TriggerOffsetTicks.ToString(CultureInfo.InvariantCulture),
+
+                // 04. Stop
                 "stop=" + _uiStopSource,
                 "sbuf=" + StopBufferTicks.ToString(CultureInfo.InvariantCulture),
+                "manstop=" + ManualStopTicks.ToString(CultureInfo.InvariantCulture),
                 "smin=" + StopMinAtr.ToString("0.###", CultureInfo.InvariantCulture),
                 "smax=" + StopMaxAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "swing=" + SwingStrength.ToString(CultureInfo.InvariantCulture),
+                "maper=" + MaPeriod.ToString(CultureInfo.InvariantCulture),
+                "e50per=" + E50Period.ToString(CultureInfo.InvariantCulture),
+
+                // 05. Targets
                 "tiers=" + TierCount.ToString(CultureInfo.InvariantCulture),
                 "tp1r=" + Tp1R.ToString("0.###", CultureInfo.InvariantCulture),
                 "tp2r=" + Tp2R.ToString("0.###", CultureInfo.InvariantCulture),
                 "tp3r=" + Tp3R.ToString("0.###", CultureInfo.InvariantCulture),
                 "tp1pct=" + Tp1Pct.ToString(CultureInfo.InvariantCulture),
+                "tp2pct=" + Tp2Pct.ToString(CultureInfo.InvariantCulture),
                 "be=" + (BreakevenOnTp1 ? "1" : "0"),
-                // §68 amendment: these five change WHAT is traded, the same
-                // test the risk multiplier fails (which is why THAT one stays
-                // excluded). Left out, a restart with a different
-                // SwingStrength — or any of the other four — would NOT get a
-                // new bucket, and genuinely different configurations would
-                // merge onto one equity curve: the exact contamination the
-                // digest exists to expose (§10).
-                "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
-                "swing=" + SwingStrength.ToString(CultureInfo.InvariantCulture),
-                "ribf=" + RibbonFastSec.ToString(CultureInfo.InvariantCulture),
-                "ribs=" + RibbonSlowSec.ToString(CultureInfo.InvariantCulture),
+                "beoff=" + BreakevenOffsetTicks.ToString(CultureInfo.InvariantCulture),
+                "trail=" + (TrailAfterTp2 ? "1" : "0"),
+                "trailatr=" + TrailAtrMult.ToString("0.###", CultureInfo.InvariantCulture),
+
+                // 06. Session
                 "ews=" + EntryWindowStartHhmm.ToString(CultureInfo.InvariantCulture),
                 "ewe=" + EntryWindowEndHhmm.ToString(CultureInfo.InvariantCulture),
-                "minbb=" + MinBarsBetweenSec.ToString(CultureInfo.InvariantCulture),
+                "flat=" + FlattenHhmm.ToString(CultureInfo.InvariantCulture),
+                "maxbox=" + MaxTradesPerBox.ToString(CultureInfo.InvariantCulture),
+                "maxday=" + MaxTradesPerDay.ToString(CultureInfo.InvariantCulture),
+                "dloss=" + DailyLossLimit.ToString("0.##", CultureInfo.InvariantCulture),
+                "dprofit=" + DailyProfitTarget.ToString("0.##", CultureInfo.InvariantCulture),
+                "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
+
                 "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
             }));
         }

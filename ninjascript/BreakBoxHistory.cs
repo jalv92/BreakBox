@@ -213,12 +213,14 @@ namespace BreakBoxCore
         }
 
         // Keys that scale SIZE rather than change the DECISION. The shell hands
-        // in everything it has, including risk, and the drop happens here — in
-        // the file the assert suite can see — rather than at the impure call
-        // site. §10: including `_uiRiskMult` would fragment the curve into a
-        // new colour every time the user touches the Risk buttons, which
-        // defeats the entire point of the seam.
-        private static readonly string[] Excluded = { "risk" };
+        // in everything it has, including risk and base quantity, and the drop
+        // happens here — in the file the assert suite can see — rather than at
+        // the impure call site. §10: including `_uiRiskMult` or `BaseQuantity`
+        // would fragment the curve into a new colour every time the user
+        // touches the Risk buttons or the quantity dial, which defeats the
+        // entire point of the seam. Both scale `q = BaseQuantity * _uiRiskMult`
+        // — neither changes an entry, exit or gate.
+        private static readonly string[] Excluded = { "risk", "qty" };
 
         public static string Canonical(IReadOnlyList<string> pairs)
         {
