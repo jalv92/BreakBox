@@ -416,11 +416,21 @@ namespace NinjaTrader.NinjaScript.Indicators
         // edges never move after the seal (spec §6.1), so redrawing it every
         // bar would buy nothing and cost 780 draw objects a session.
         //
-        // Anchored on `SealedAt`, the bar that froze the edges — the same
-        // anchor the strategy's own DrawBox uses. Task 40's box has no
-        // AnchorStart: the candidate window that produced it is not part of the
-        // object, and the rectangle you want to see is the one the engine is
-        // trading, not the samples it measured.
+        // Right edge = `SealedAt` = `Time[0]`, because PaintBox() runs inside
+        // the SAME OnBarUpdate that just called Seal() (Lifecycle -> Form ->
+        // Seal, all before this method). Left edge used to be `SealedAt` too —
+        // a zero-width hairline, since the two anchors were the same
+        // timestamp. Task 40's box has no AnchorStart, but the box's own
+        // High/Low ARE the range of the last BoxLookback CLOSED bars (the
+        // Lifecycle window, BreakBoxCore.cs's WindowRange/Form), so the box
+        // covers real time that already exists on this chart: walk back
+        // `_boxCfg.BoxLookback` bars from the sealing bar. Indexing `Time[]`
+        // (not `SealedAt` minus N seconds) means the left edge survives
+        // session gaps and weekends the way a literal time subtraction would
+        // not. `Math.Min` guards a box sealed with fewer than BoxLookback
+        // bars of chart history (should not happen in practice — the window
+        // can't fill without that many bars — but an IndexOutOfRange here
+        // would take the whole indicator down for a drawing bug).
         private void PaintBox()
         {
             BbBox box = _boxEngine.Box;
@@ -428,8 +438,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             _lastDrawnBoxId = box.Id;
 
+            int barsBack = Math.Min(_boxCfg.BoxLookback, CurrentBar);
+            DateTime left = Time[barsBack];
+
             DrawTag(Draw.Rectangle(this, "bbv_box_" + box.Id, false,
-                                   box.SealedAt, box.Low, Time[0], box.High,
+                                   left, box.Low, Time[0], box.High,
                                    BoxBrush, BoxBrush, 6));
         }
 
@@ -474,6 +487,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     // The strategy appends to this file while we read it. A
                     // locked file costs markers, never the indicator.
+                    Print("BreakBoxVision: could not read " + files[f] + " (" + ex.Message + ")");
+                    continue;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // UnauthorizedAccessException does NOT derive from
+                    // IOException in .NET — a permissions-denied file (ACL,
+                    // read-only, another process holding it exclusively)
+                    // would otherwise escape uncaught during State.DataLoaded
+                    // and take the whole indicator down. Same degrade as
+                    // above: a history file Vision cannot read costs markers,
+                    // never the indicator, because this has to work on a
+                    // chart with no strategy ever attached.
                     Print("BreakBoxVision: could not read " + files[f] + " (" + ex.Message + ")");
                     continue;
                 }
