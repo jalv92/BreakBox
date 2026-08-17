@@ -317,6 +317,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 _barSec = BarSeconds();
                 Print("BreakBox: bar ~ " + _barSec + "s (" + _barSecLabel + ")");
+
+                // Load-bearing order: these six mirrors must be synced from
+                // their NinjaScriptProperty BEFORE BuildConfigs() runs, because
+                // BuildConfigs reads the mirrors, never the properties directly
+                // (a panel toggle only has the mirror to flip — see Rebuild()
+                // in BreakBoxPanel.cs). C# default-initializes bool fields to
+                // false, so syncing after BuildConfigs() silently baked a
+                // disabled, directionless engine (EnableBreak/AllowLong/
+                // AllowShort all false) into every fresh chart regardless of
+                // what the user set the properties to, and stamped the first
+                // config-digest bucket with a configuration that never ran.
+                // Do not move this below BuildConfigs() again.
+                _uiCloudOn = EnableCloud;
+                _uiBreakOn = EnableBreak;
+                _uiLongOn = AllowLong;
+                _uiShortOn = AllowShort;
+                _uiRiskMult = RiskMultiplier;
+                _uiStopSource = StopSourceParam;
+
                 BuildConfigs();
                 _engine = new BbEngine(_cfg, _engState);
                 // BbCloud's constructor sizes _cloudState.SlopeBuf from
@@ -332,13 +351,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _emaTrend = new Ema(_cloudCfg.TrendLine);
                 _swings = new SwingDetector(SwingStrength);
                 OpenHistory();
-
-                _uiCloudOn = EnableCloud;
-                _uiBreakOn = EnableBreak;
-                _uiLongOn = AllowLong;
-                _uiShortOn = AllowShort;
-                _uiRiskMult = RiskMultiplier;
-                _uiStopSource = StopSourceParam;
 
                 if (BarsPeriod.BarsPeriodType != BarsPeriodType.Minute || BarsPeriod.Value != 1)
                     Print("BreakBox WARNING: primary series is not 1-Minute. Every ATR gate and bar budget "
