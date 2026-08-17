@@ -196,6 +196,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // ---- Box and engines. Every box horizon is a SECONDS
                 // parameter (§8) and is converted in BuildConfigs().
                 SessionOpenHhmm = 1800;
+                BoxLookbackSec = 210;            // C — the measured ~7-bar white rectangle at 30s
+                BoxMinBars = 2;                  // a confirmation COUNT, not a horizon
+                BoxRangePctile = 35;
+                BoxSampleN = 200;
+                BoxMeanSamples = 20;
+                BoxValidLo = 0.4;
+                BoxValidHi = 2.5;
+                BoxDeadAtr = 0.5;
+                BoxMaxAgeSec = 1800;
+                BoxArmsPerEdge = 2;
+                BoxArmCooldownSec = 180;
 
                 EnableBreak = true;
                 AllowLong = true;
@@ -323,13 +334,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             _cfg.EnableBreak = _uiBreakOn;
             _cfg.AllowLong = _uiLongOn;
             _cfg.AllowShort = _uiShortOn;
-            // §8. The conversion lives HERE, not at DataLoaded: a panel toggle
-            // rebuilds this config too, and a rebuild that skipped the
-            // conversion would hand the engine raw seconds as a bar count.
-            // The box's remaining §6.1 lifecycle dials (BoxLookback,
-            // BoxMinBars, ...) are not yet on the parameter surface — they
-            // stay at BbConfig's own defaults until a later task adds their
-            // NinjaScriptProperty and BuildConfigs() wiring.
+            // §8/§6.3. Every box horizon is SECONDS on the property surface and
+            // is converted HERE, not at DataLoaded: a panel toggle rebuilds this
+            // config too, and a rebuild that skipped the conversion would hand
+            // the engine raw seconds where it expects bars — the exact defect
+            // (a 240-minute box judged against a 14-bar ATR) v1 shipped with.
+            _cfg.BoxLookback = BbScale.Bars(BoxLookbackSec, _barSec, 2);
+            _cfg.BoxMinBars = BoxMinBars;
+            _cfg.BoxRangePctile = BoxRangePctile;
+            _cfg.BoxSampleN = BoxSampleN;
+            _cfg.BoxMeanSamples = BoxMeanSamples;
+            _cfg.BoxValidLo = BoxValidLo;
+            _cfg.BoxValidHi = BoxValidHi;
+            _cfg.BoxDeadAtr = BoxDeadAtr;
+            _cfg.BoxMaxAge = BbScale.Bars(BoxMaxAgeSec, _barSec, 2);
+            _cfg.BoxArmsPerEdge = BoxArmsPerEdge;
+            _cfg.BoxArmCooldown = BbScale.Bars(BoxArmCooldownSec, _barSec, 1);
             _cfg.TriggerLife = BbScale.Bars(TriggerLifeSec, _barSec, 1);
             _cfg.MaxTradesPerBox = MaxTradesPerBox;
             _cfg.MaxTradesPerDay = MaxTradesPerDay;
@@ -1072,8 +1092,52 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double RiskMultiplier { get; set; }
 
         [NinjaScriptProperty, Range(0, 2359)]
-        [Display(Name = "Session open HHMM", Order = 3, GroupName = "02. Box")]
+        [Display(Name = "Session open HHMM", Order = 1, GroupName = "02. Box")]
         public int SessionOpenHhmm { get; set; }
+
+        [NinjaScriptProperty, Range(30, 7200)]
+        [Display(Name = "Box lookback (sec)", Description = "210 = 7 bars at 30s", Order = 2, GroupName = "02. Box")]
+        public int BoxLookbackSec { get; set; }
+
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Box min bars", Description = "Consecutive passing bars before it seals", Order = 3, GroupName = "02. Box")]
+        public int BoxMinBars { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 99.0)]
+        [Display(Name = "Box range percentile", Order = 4, GroupName = "02. Box")]
+        public double BoxRangePctile { get; set; }
+
+        [NinjaScriptProperty, Range(20, 2000)]
+        [Display(Name = "Box sample ring", Order = 5, GroupName = "02. Box")]
+        public int BoxSampleN { get; set; }
+
+        [NinjaScriptProperty, Range(1, 200)]
+        [Display(Name = "Box mean samples", Description = "Also the cold start: nothing trades until this many boxes have sealed", Order = 6, GroupName = "02. Box")]
+        public int BoxMeanSamples { get; set; }
+
+        [NinjaScriptProperty, Range(0.05, 5.0)]
+        [Display(Name = "Box valid lo (x mean)", Order = 7, GroupName = "02. Box")]
+        public double BoxValidLo { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 20.0)]
+        [Display(Name = "Box valid hi (x mean)", Order = 8, GroupName = "02. Box")]
+        public double BoxValidHi { get; set; }
+
+        [NinjaScriptProperty, Range(0.05, 10.0)]
+        [Display(Name = "Box dead (ATR)", Order = 9, GroupName = "02. Box")]
+        public double BoxDeadAtr { get; set; }
+
+        [NinjaScriptProperty, Range(60, 86400)]
+        [Display(Name = "Box max age (sec)", Order = 10, GroupName = "02. Box")]
+        public int BoxMaxAgeSec { get; set; }
+
+        [NinjaScriptProperty, Range(1, 10)]
+        [Display(Name = "Box arms per edge", Order = 11, GroupName = "02. Box")]
+        public int BoxArmsPerEdge { get; set; }
+
+        [NinjaScriptProperty, Range(0, 3600)]
+        [Display(Name = "Box arm cooldown (sec)", Order = 12, GroupName = "02. Box")]
+        public int BoxArmCooldownSec { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Break engine", Order = 1, GroupName = "03. Engines")]
@@ -1086,14 +1150,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow short", Order = 4, GroupName = "03. Engines")]
         public bool AllowShort { get; set; }
-
-        [NinjaScriptProperty, Range(0, 100)]
-        [Display(Name = "Break buffer (ticks)", Order = 5, GroupName = "03. Engines")]
-        public int BreakBufferTicks { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Require close outside", Description = "OFF trades wicks through the edge", Order = 6, GroupName = "03. Engines")]
-        public bool RequireCloseOutside { get; set; }
 
         [NinjaScriptProperty, Range(5, 3600)]
         [Display(Name = "Trigger life (seconds)", Order = 7, GroupName = "03. Engines")]

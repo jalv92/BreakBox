@@ -26,6 +26,29 @@ public static class BoxTests
         ArmingDoesNotSpendTheEdge();
         CooldownAndArmCapAcrossExpiries();
         ExpirySpendsAnArmRejectionRefundsIt();
+        SecondsScaleToBars();
+    }
+
+    private static void SecondsScaleToBars()
+    {
+        T.Section("Box — the §6.3 surface is SECONDS, converted once");
+
+        // BoxLookbackSec 210 = the measured ~7-bar white rectangle at 30s.
+        T.CheckInt(BbScale.Bars(210, 15, 2), 14, "15s bars");
+        T.CheckInt(BbScale.Bars(210, 30, 2), 7, "30s bars — the reference chart");
+        T.CheckInt(BbScale.Bars(210, 60, 2), 3, "1m bars");
+
+        // 210/120 = 1, and a one-bar window has no range to speak of. The floor
+        // is what keeps "escala sola" from meaning "degenerates silently".
+        T.CheckInt(BbScale.Bars(210, 120, 2), 2, "2m bars clamp to the floor");
+
+        // A tick-bar estimate can come back as 0 seconds if the estimator is
+        // starved. Dividing by it would throw inside OnStateChange, where the
+        // exception reads as "the strategy will not load". Phase 1's rule is
+        // that a nonsense bar size returns the FLOOR, not a horizon-sized bar
+        // count: an unknown bar size must degrade to the smallest honest window,
+        // never to a 180-bar one that looks like a real setting.
+        T.CheckInt(BbScale.Bars(180, 0, 2), 2, "a zero bar size floors");
     }
 
     // 09:30 ET, inside the default entry window.
