@@ -21,6 +21,7 @@ public static class BoxTests
         SampleRingIsNotSelfSelected();
         FormationExcludesTheCurrentBar();
         SealFreezesTheEdges();
+        InvalidateOnBreakAndOnAge();
     }
 
     // 09:30 ET, inside the default entry window.
@@ -71,6 +72,15 @@ public static class BoxTests
         T.Section("Box — cold start is hard-disabled and says so");
 
         var cfg = Cfg();
+        // SEAL (T42) and INVALIDATE (T43) landed after this test was written:
+        // this exact tape now genuinely seals ~3 boxes by bar 60 (quiet run ->
+        // seal, break invalidates it, next quiet run seals the next one), which
+        // would graduate SealedCount past the shared Cfg()'s BoxMeanSamples=3
+        // mid-run and flip the gate before the loop even finishes — not a cold
+        // start anymore. Raised here, locally, so THIS test still tests what it
+        // says it tests: an undefined cold start with no sealed-box history at
+        // all, for the whole tape.
+        cfg.BoxMeanSamples = 1000;
         var st = new BbEngineState();
         var eng = new BbEngine(cfg, st);
 
@@ -187,5 +197,45 @@ public static class BoxTests
         }
         T.CheckInt(st.Box.Id, 1, "a live box is not replaced");
         T.CheckClose(st.Box.High, 100.5, "and its edges did not move");
+    }
+
+    private static void InvalidateOnBreakAndOnAge()
+    {
+        T.Section("Box — INVALIDATE on a close beyond an edge, and on age");
+
+        // --- Killed by distance. ATR 2.0, BoxDeadAtr 0.5 -> 1.0 point of slack
+        // past 100.5, so a close at 102.0 is 6 ticks beyond the tolerance.
+        var cfg = Cfg();
+        var st = new BbEngineState();
+        var eng = new BbEngine(cfg, st);
+
+        DateTime t = Open;
+        for (int i = 0; i < 6; i++)
+        {
+            Step(eng, t, 100.0, 100.5, 99.5, 100.0, 2.0);
+            t = t.AddSeconds(30);
+        }
+        T.Check(st.Box != null, "sealed");
+
+        Step(eng, t, 100.0, 101.2, 100.0, 101.0, 2.0);
+        t = t.AddSeconds(30);
+        T.Check(st.Box != null, "a close inside the BoxDeadAtr tolerance does not kill it");
+
+        Step(eng, t, 101.0, 102.5, 100.9, 102.0, 2.0);
+        T.Check(st.Box == null, "a close beyond the edge by more than BoxDeadAtr kills it");
+
+        // --- Killed by age, and replaced by the next candidate.
+        var cfg2 = Cfg();
+        cfg2.BoxMaxAge = 5;
+        var st2 = new BbEngineState();
+        var eng2 = new BbEngine(cfg2, st2);
+
+        DateTime u = Open;
+        for (int i = 0; i < 12; i++)        // seals at bar 6, ages out on bar 12
+        {
+            Step(eng2, u, 100.0, 100.5, 99.5, 100.0, 2.0);
+            u = u.AddSeconds(30);
+        }
+        T.CheckInt(st2.Box.Id, 2, "an aged-out box is replaced by the next candidate to seal");
     }
 }

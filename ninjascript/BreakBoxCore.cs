@@ -328,7 +328,33 @@ namespace BreakBoxCore
                 return;
 
             PushSample(hi - lo);
+            // Invalidate BEFORE forming, so the bar that buries a box can also
+            // be the bar a replacement seals on — a one-bar dead zone after
+            // every box is a one-bar dead zone in the only quiet tape the model
+            // trades.
+            Invalidate(bar, atr);
             Form(bar, hi, lo);
+        }
+
+        private void Invalidate(BbBar bar, double atr)
+        {
+            if (_st.Box == null)
+                return;
+
+            _st.BoxAge++;
+
+            // The tolerance is ATR-scaled, not a tick count: one tick through an
+            // edge is noise on any tape, and the same absolute number is noise on
+            // one instrument and a real break on another.
+            double dead = _cfg.BoxDeadAtr * atr;
+            bool broken = bar.Close > _st.Box.High + dead || bar.Close < _st.Box.Low - dead;
+            bool old = _st.BoxAge > _cfg.BoxMaxAge;
+            if (!broken && !old)
+                return;
+
+            Disarm();
+            _st.Box = null;
+            _st.BoxAge = 0;
         }
 
         // MAX(High,N)[1] − MIN(Low,N)[1]: the window ENDS one bar back, because
