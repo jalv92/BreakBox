@@ -15,6 +15,7 @@ public static class HistoryTests
     {
         RoundTrip();
         EquityAndHash();
+        WriteGuard();
     }
 
     private static BbTradeRecord Rec()
@@ -106,5 +107,35 @@ public static class HistoryTests
         T.CheckInt(BbHistory.Hash(a).Length, 8, "8 hex chars, sized to fit a panel row");
         T.Check(BbHistory.Hash(a) == BbHistory.Hash(a), "the hash is stable across calls");
         T.CheckInt(BbHistory.Hash(null).Length, 8, "a null config hashes rather than throwing");
+    }
+
+    private static void WriteGuard()
+    {
+        T.Section("History — the write guard");
+
+        // The fill path also runs in the Strategy Analyzer, in optimisation
+        // sweeps, and over historical bars at startup. One 2,000-iteration
+        // sweep would append tens of thousands of junk rows to the live curve —
+        // the feature destroying its own data set. This is the assert that
+        // stands between those two things.
+        T.Check(BbHistory.ShouldWrite(true, false, "Sim101"), "a live realtime account writes");
+        T.Check(!BbHistory.ShouldWrite(false, false, "Sim101"), "historical bars do NOT write");
+        T.Check(!BbHistory.ShouldWrite(true, true, "Sim101"), "TickReplay re-runs the fill path: no write");
+        T.Check(!BbHistory.ShouldWrite(true, false, "Backtest"), "the Strategy Analyzer account is skipped");
+        T.Check(!BbHistory.ShouldWrite(true, false, "backtest_4"), "and its numbered variants, case-insensitively");
+        T.Check(!BbHistory.ShouldWrite(true, false, ""), "an unresolved account does not write");
+        T.Check(!BbHistory.ShouldWrite(true, false, null), "and neither does a null one");
+
+        // Replay fills are real fills against recorded tape and worth keeping —
+        // but mixed into the live file, a replayed October reads as this week's
+        // P&L. Separate file, same format.
+        T.Check(BbHistory.ShouldWrite(true, false, "Playback101"), "Replay writes");
+        T.Check(BbHistory.FileName("MNQ 09-26", "Playback101").EndsWith("-replay.jsonl",
+                StringComparison.Ordinal), "...to a -replay file");
+        T.Check(!BbHistory.FileName("MNQ 09-26", "Sim101").Contains("-replay"),
+                "the live file has no suffix");
+        T.Check(BbHistory.FileName("MNQ 09-26", "Sim101") == "history-MNQ_09-26-Sim101.jsonl",
+                "the file name is one instrument, one account");
+        T.Check(BbHistory.FileName(null, null).Length > 0, "nulls yield a name, not an exception");
     }
 }

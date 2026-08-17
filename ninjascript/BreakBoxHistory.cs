@@ -170,6 +170,38 @@ namespace BreakBoxCore
             }
         }
 
+        // THE WRITE GUARD (§10). Every argument is an NT8 fact passed IN:
+        // `realtime` is State == State.Realtime, `tickReplay` is
+        // Bars.IsTickReplay, `account` is Account.Name. They are parameters
+        // rather than reads because this decision is the most expensive one in
+        // the file and it has to be assertable.
+        //
+        // The account check is not redundant with the state check: a Strategy
+        // Analyzer iteration reaches State.Realtime on some NT8 builds, and
+        // that is exactly the path that would empty 40,000 rows into the live
+        // curve before anyone noticed.
+        public static bool ShouldWrite(bool realtime, bool tickReplay, string account)
+        {
+            if (!realtime || tickReplay)
+                return false;
+            if (string.IsNullOrEmpty(account))
+                return false;
+            return !account.StartsWith("Backtest", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // One file per instrument per account, and Replay gets its own. NT8
+        // names the Market Replay account "Playback101"; matching on the prefix
+        // rather than the exact name survives NT8 numbering a second one.
+        public static string FileName(string instrument, string account)
+        {
+            string ins = Clean(instrument == null ? "unknown" : instrument).Replace(' ', '_');
+            string acc = Clean(account == null ? "unknown" : account).Replace(' ', '_');
+            if (ins.Length == 0) ins = "unknown";
+            if (acc.Length == 0) acc = "unknown";
+            bool replay = acc.StartsWith("Playback", StringComparison.OrdinalIgnoreCase);
+            return "history-" + ins + "-" + acc + (replay ? "-replay" : "") + ".jsonl";
+        }
+
         // "R" is the round-trip format: parse(format(x)) == x exactly. "0.00"
         // would quietly re-quantise every price the panel later subtracts.
         private static string Num(double v)
