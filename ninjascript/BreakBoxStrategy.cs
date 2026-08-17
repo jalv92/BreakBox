@@ -151,6 +151,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double _dayPnl;
         private readonly List<double> _tradePnls = new List<double>();
 
+        // History (§10). The list is the panel's data source and holds EVERY
+        // trade of this run, written or not: in a backtest you still want to
+        // see the curve the run produced — you just must not let it touch the
+        // live file. The guard is about the FILE, not about the chart.
+        private readonly List<BbTradeRecord> _history = new List<BbTradeRecord>();
+        private string _histPath = "";
+        private string _cfgHash = "";
+
         // Panel-driven overrides. The panel writes them, OnBarUpdate reads them.
         // They start as the parameter values and diverge only when a human
         // clicks something.
@@ -302,6 +310,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _emaSlow = new Ema(_cloudCfg.RibbonSlow);
                 _emaTrend = new Ema(_cloudCfg.TrendLine);
                 _swings = new SwingDetector(SwingStrength);
+                OpenHistory();
 
                 _uiCloudOn = EnableCloud;
                 _uiBreakOn = EnableBreak;
@@ -410,6 +419,33 @@ namespace NinjaTrader.NinjaScript.Strategies
             // handed over rather than left dangling on the old object.
             if (_engine != null)
                 _engine = new BbEngine(_cfg, _engState);
+
+            // The digest that draws the seam between configurations. Rebuilt
+            // HERE rather than at DataLoaded because BuildConfigs is exactly
+            // what a panel toggle calls: a hash that only tracked the startup
+            // parameters would stamp post-toggle trades as identical to
+            // pre-toggle ones, which is the contamination the seam exists to
+            // make visible. `risk` is listed and then dropped by Canonical —
+            // listed so the exclusion is legible at the call site too.
+            _cfgHash = BbHistory.Hash(BbHistory.Canonical(new List<string>
+            {
+                "risk=" + _uiRiskMult.ToString("0.##", CultureInfo.InvariantCulture),
+                "cloud=" + (_uiCloudOn ? "1" : "0"),
+                "box=" + (_uiBreakOn ? "1" : "0"),
+                "long=" + (_uiLongOn ? "1" : "0"),
+                "short=" + (_uiShortOn ? "1" : "0"),
+                "stop=" + _uiStopSource,
+                "sbuf=" + StopBufferTicks.ToString(CultureInfo.InvariantCulture),
+                "smin=" + StopMinAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "smax=" + StopMaxAtr.ToString("0.###", CultureInfo.InvariantCulture),
+                "tiers=" + TierCount.ToString(CultureInfo.InvariantCulture),
+                "tp1r=" + Tp1R.ToString("0.###", CultureInfo.InvariantCulture),
+                "tp2r=" + Tp2R.ToString("0.###", CultureInfo.InvariantCulture),
+                "tp3r=" + Tp3R.ToString("0.###", CultureInfo.InvariantCulture),
+                "tp1pct=" + Tp1Pct.ToString(CultureInfo.InvariantCulture),
+                "be=" + (BreakevenOnTp1 ? "1" : "0"),
+                "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
+            }));
         }
 
         // How many seconds is one bar of the primary series worth? Time series
@@ -859,6 +895,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             double pnl = (exitPx - _bracket.EntryPx) * _bracket.Dir
                          * _bracket.QtyTotal * Instrument.MasterInstrument.PointValue;
 
+            // Journalled BEFORE the bracket is torn down: `_bracket.Dir` is
+            // zeroed twelve lines below, and reading it after is how a history
+            // file fills up with dir=0 rows that plot but mean nothing.
+            BbTradeRecord rec = default(BbTradeRecord);
+            rec.Ts = Time[0];
+            rec.Dir = _bracket.Dir;
+            rec.Entry = _bracket.EntryPx;
+            rec.Exit = exitPx;
+            rec.Qty = _bracket.QtyTotal;
+            rec.R = _bracket.R > 0.0 ? (exitPx - _bracket.EntryPx) * _bracket.Dir / _bracket.R : 0.0;
+            rec.Pnl = pnl;
+            rec.Engine = _owningEngine.ToString();
+            rec.ExitReason = _exitReason.Length > 0 ? _exitReason : "unknown";
+            rec.CfgHash = _cfgHash;
+            AppendHistory(rec);
+
             _inTrade = false;
             _flattenPending = false;
             _stopChangePending = false;
@@ -870,6 +922,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             _bracket.Dir = 0;
             _dir = 0;
+
+            // Cleared here, not at the next entry: a stale reason on the next
+            // trade's record is indistinguishable from a real one.
+            _exitReason = "";
 
             CheckDailyLimits();
         }
@@ -930,7 +986,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Any exit that leaves us flat closes the trade out.
             if (_inTrade && Position.MarketPosition == MarketPosition.Flat)
+            {
+                // The exit order's own signal name is the only honest reason
+                // available here — BB_Stop / BB_TP2 / BB_Flatten. FlattenAll
+                // already set a richer one, so it wins.
+                if (_exitReason.Length == 0)
+                    _exitReason = sig;
                 WentFlat(price);
+            }
         }
 
         protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice,
@@ -984,6 +1047,64 @@ namespace NinjaTrader.NinjaScript.Strategies
                     BbExits.AdoptManualStop(_bracket, _bracket.StopPx, true);
                     Print("BreakBox: stop cancelled by hand — not resubmitting");
                 }
+            }
+        }
+
+        #endregion
+
+        #region History (file I/O — the impure half of BreakBoxHistory.cs)
+
+        // Resolved once, at DataLoaded. NinjaTrader.Core.Globals.UserDataDir is
+        // a directory probe, and Account.Name is stable for the strategy's life.
+        private void OpenHistory()
+        {
+            string acct = Account != null ? Account.Name : "";
+            string ins = Instrument != null ? Instrument.FullName : "";
+            string dir = System.IO.Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "BreakBox");
+            _histPath = System.IO.Path.Combine(dir, BbHistory.FileName(ins, acct));
+            _history.Clear();
+
+            try
+            {
+                if (!System.IO.Directory.Exists(dir))
+                    System.IO.Directory.CreateDirectory(dir);
+                if (!System.IO.File.Exists(_histPath))
+                    return;
+                string[] lines = System.IO.File.ReadAllLines(_histPath);
+                // Skip, never throw. A half-written last line — the platform was
+                // killed mid-append — must cost that ONE trade, not the chart.
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    BbTradeRecord r;
+                    if (BbHistory.TryParse(lines[i], out r))
+                        _history.Add(r);
+                }
+                Print("BreakBox: history loaded, " + _history.Count + " trades from " + _histPath);
+            }
+            catch (Exception ex)
+            {
+                // A strategy that refuses to start because a log file is locked
+                // is a worse outcome than a strategy with an empty chart.
+                Print("BreakBox: history unreadable (" + ex.Message + ")");
+            }
+        }
+
+        private void AppendHistory(BbTradeRecord r)
+        {
+            _history.Add(r);
+
+            if (!BbHistory.ShouldWrite(State == State.Realtime,
+                                       Bars != null && Bars.IsTickReplay,
+                                       Account != null ? Account.Name : ""))
+                return;
+
+            try
+            {
+                System.IO.File.AppendAllText(_histPath, BbHistory.Serialise(r) + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                Print("BreakBox: history NOT written (" + ex.Message + ")");
             }
         }
 
