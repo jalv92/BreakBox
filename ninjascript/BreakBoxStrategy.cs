@@ -81,6 +81,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SigAdd1 = "BB_Add1";
         private const string SigAdd2 = "BB_Add2";
         private const string SigAvgTp = "BB_AvgTp";
+        private const string SigOrphanExit = "BB_OrphanExit";
 
         private static readonly string[] TierSig = { SigTp1, SigTp2, SigTp3 };
 
@@ -225,6 +226,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string _avgLogPath = "";
         private bool _avgSimBlockPrinted;
         private readonly int[] _avgFireIdx = new int[AvgConfig.MAX_LEVELS];
+        // Realised points of the averaging stack, booked against the LIVE
+        // average instead of P0 — see the exit-fill block in OnExecutionUpdate.
+        private double _avgRealizedPts;
 
         #endregion
 
@@ -621,6 +625,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "dloss=" + DailyLossLimit.ToString("0.##", CultureInfo.InvariantCulture),
                 "dprofit=" + DailyProfitTarget.ToString("0.##", CultureInfo.InvariantCulture),
                 "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
+
+                // 07. Averaging lab (§7). The module ON and the module OFF are
+                // two different strategies — sharing one digest would blend
+                // their journal curves into a single line that describes
+                // neither. AveragingEnabled leads because it is the switch;
+                // the rest change the grid the switch turns on.
+                "avg=" + (AveragingEnabled ? "1" : "0"),
+                "avgmax=" + AveragingMaxAdds.ToString(CultureInfo.InvariantCulture),
+                "avgq=" + AveragingAddQty.ToString(CultureInfo.InvariantCulture),
+                "avgbud=" + AveragingBudgetFraction.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgg=" + AveragingTargetProfitDollars.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgsbuf=" + AveragingStopBufferTicks.ToString(CultureInfo.InvariantCulture),
+                "avgspace=" + AveragingSpacingSource,
+                "avgatr=" + AveragingSpacingAtrMult.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgconf=" + AveragingConfirmBars.ToString(CultureInfo.InvariantCulture),
+                "avgvol=" + AveragingVolAbortMult.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgcut=" + AveragingNoAddsFinalMinutes.ToString(CultureInfo.InvariantCulture),
+                "avgcomm=" + AveragingCommissionRt.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgslip=" + AveragingSlippageReserveTicks.ToString(CultureInfo.InvariantCulture),
 
                 "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
             }));
@@ -1311,6 +1334,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _avgPlan = plan;
             _avgQty = qty;
             _avgAvgPx = fillPx;
+            _avgRealizedPts = 0.0;
             _avgSimBlockPrinted = false;
 
             _bracket.Dir = _dir;
@@ -1526,8 +1550,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             CancelWorkingEntry(why);
             if (Position.MarketPosition != MarketPosition.Flat)
             {
-                if (_dir > 0) ExitLong(SigFlatten, _entrySig);
-                else ExitShort(SigFlatten, _entrySig);
+                // Same fork as SubmitStop, for the same reason: a named
+                // fromEntrySignal closes only THAT entry's quantity, and an
+                // averaging stack was built under BB_Long + BB_Add1 + BB_Add2.
+                // Naming the entry here left every add in the market, unstopped,
+                // after a session flatten or a rejected leg.
+                string fromSig = _avgArmed ? "" : _entrySig;
+                if (_dir > 0) ExitLong(SigFlatten, fromSig);
+                else ExitShort(SigFlatten, fromSig);
             }
             else
             {
@@ -1576,6 +1606,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pts += (exitPx - _bracket.EntryPx) * _bracket.Dir * residual;
             double pnl = pts * Instrument.MasterInstrument.PointValue;
 
+            // The same arithmetic on the averaging basis. Both survive: `pts`
+            // keeps pricing every non-averaging trade exactly as before, and the
+            // journal reaches for the average-basis pair only when the trade
+            // really was a stack.
+            double avgPts = 0.0, avgPnl = 0.0;
+            if (_avgArmed)
+            {
+                avgPts = _avgRealizedPts;
+                if (residual > 0)
+                    avgPts += (exitPx - _avgAvgPx) * _bracket.Dir * residual;
+                avgPnl = avgPts * Instrument.MasterInstrument.PointValue;
+            }
+
             // Journalled BEFORE the bracket is torn down: `_bracket.Dir` is
             // zeroed twelve lines below, and reading it after is how a history
             // file fills up with dir=0 rows that plot but mean nothing.
@@ -1590,11 +1633,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             rec.Engine = _owningEngine.ToString();
             rec.ExitReason = _exitReason.Length > 0 ? _exitReason : "unknown";
             rec.CfgHash = _cfgHash;
+            if (_avgArmed)
+            {
+                // Entry stays P0 — that IS where the trade started — but the cash
+                // and the single exit price that reproduces it come off the
+                // average basis, the only one that matches the account.
+                rec.Pnl = avgPnl;
+                rec.Exit = BbExits.ExitPxFromPts(_avgAvgPx, _bracket.Dir, avgPts, _bracket.QtyTotal);
+            }
             AppendHistory(rec);
 
             if (_avgArmed)
             {
-                _avgRec.Pnl = pnl;
+                _avgRec.Pnl = avgPnl;
                 _avgRec.Outcome = _exitReason == SigAvgTp ? "tp"
                                 : _exitReason == SigStop ? "stop"
                                 : (_exitReason == "session_window" || _exitReason == SigFlatten) ? "session_flatten"
@@ -1611,7 +1662,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
                 Print("BreakBox AVG: trade closed — " + _avgRec.Outcome + ", pnl "
-                      + pnl.ToString("C2") + ", min open " + _avgRec.MinUnrealized.ToString("C2")
+                      + avgPnl.ToString("C2") + ", min open " + _avgRec.MinUnrealized.ToString("C2")
                       + ", fills " + _avgRec.Fills.Count);
             }
 
@@ -1638,6 +1689,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _avgRec = null;
             _avgQty = 0;
             _avgAvgPx = 0.0;
+            _avgRealizedPts = 0.0;
             _avgTpChangePending = false;
             _avgLastTpSent = double.NaN;
             _avgTpLastQty = 0;
@@ -1673,8 +1725,27 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (_inTrade && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp || IsTierSig(sig)))
             {
                 BbExits.AddExitFill(_bracket, price, quantity);
-                if (_avgArmed && sig == SigAvgTp)
-                    _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;   // mirror of OnAddExecution: books stay truthful on the averaging exit
+                if (_avgArmed && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp))
+                {
+                    // The stack books its own realised points, against the LIVE
+                    // average rather than P0. Adds fill at better prices than the
+                    // entry, so BbExits' P0 basis overstates the loss on a stopped
+                    // stack and understates the win on a TP — the same order of
+                    // magnitude as G itself at the NQ defaults. BbExits is left
+                    // alone on purpose: for the base 3-tier bracket the entry
+                    // price IS the basis, and that path must not move.
+                    _avgRealizedPts += (price - _avgAvgPx) * _dir * quantity;
+                    // Level -2 = an exit execution. PlannedPx carries the average
+                    // basis at that moment, which is what makes the competitor arm
+                    // computable offline from the JSONL alone. (-1 is the entry.)
+                    _avgRec.Fills.Add(new AvgFillRec
+                    {
+                        Ts = time, Level = -2,
+                        PlannedPx = _avgAvgPx, FillPx = price, Qty = quantity
+                    });
+                    if (sig == SigAvgTp)
+                        _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;   // mirror of OnAddExecution: books stay truthful on the averaging exit
+                }
             }
 
             // Entry fill. Gated on the signal NAME, not on a bool: by the time
@@ -1682,6 +1753,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             if ((sig == SigLong || sig == SigShort) && execution.Order.OrderState == OrderState.Filled)
             {
                 AdoptEntryFill(price, execution.Order.Filled, time);
+                return;
+            }
+
+            // An add that fills AFTER the position went flat — the stop and the
+            // add raced and the add landed second. Nothing downstream would catch
+            // it: _avgArmed is already false, so the add branch below is dead and
+            // the contracts would sit in the market with no stop behind them. The
+            // direction comes off the order, never off _dir, which WentFlat zeroed.
+            if ((sig == SigAdd1 || sig == SigAdd2) && quantity > 0 && !_inTrade)
+            {
+                Print("BreakBox AVG: ORPHAN add fill after flat — exiting " + quantity + " at market");
+                if (execution.Order.IsLong) ExitLong(0, quantity, SigOrphanExit, sig);
+                else ExitShort(0, quantity, SigOrphanExit, sig);
                 return;
             }
 

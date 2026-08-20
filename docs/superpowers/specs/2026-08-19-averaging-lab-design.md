@@ -132,7 +132,9 @@ and the vol-abort test. Unit-tested in `scripts/check.sh`'s pure half with asser
 One JSONL record per armed trade (`BreakBoxHistory.cs` UserDataDir append pattern, file
 `averaging_lab_log.jsonl`): arm inputs and solved geometry (P0, dir, q, N, d, s, S, G, L_arm, L_eff,
 spacing source, engine), every fill (level, planned px, actual px, qty, confirm-bar time), every
-state event (level dead, vol abort, stop raise), outcome (`tp | stop | session_flatten | vol_abort_exit`),
+state event (level dead, vol abort, stop raise), outcome (`tp | stop | session_flatten | other`
+— a vol abort is not an outcome: it kills the remaining adds and leaves the position and its
+stop alone, so it is recorded in `addsAborted`/`abortWhy` and the trade still ends tp/stop/flatten),
 realized P&L, **minimum unrealized equity during the trade** (the prop-firm axis), and a compact
 per-bar path `[t, h, l, c]` from entry to exit so ANY counterfactual (flat q with the host's own
 3-tier bracket — the real competitor) is computable offline without re-running Playback.

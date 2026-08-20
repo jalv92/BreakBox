@@ -41,8 +41,18 @@ under a driftless price); the planned loss cap is a mode, not a maximum; and the
 payoff shape is the one that breaches most prop firms on unrealized drawdown. The
 lab exists to MEASURE whether confirmation-gated adds beat that null. Its product is
 `<UserDataDir>/BreakBox/averaging_lab_log.jsonl` — one JSON line per armed trade with
-the solved geometry, every fill, the bar path, and the minimum open P&L. No promotion
+the solved geometry, every fill, the bar path, and the minimum open P&L. Inside `fills`,
+`level` is `-1` for the entry, `0`/`1` for an add, and `-2` for an exit execution; on a
+`-2` row `plannedPx` carries the live average basis at that moment, which is what makes
+the competitor arm computable from the file alone. No promotion
 decision of any kind before the pre-registered sample (~680 trades, spec §8).
+
+**Before you run it — the shipped defaults do not arm on NQ.** `BaseQuantity = 3` makes the
+stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming budget
+(`0.5 x DailyLossLimit` = $225) cannot host a 5-lot grid: every trade refuses with
+`target_too_small_for_stack`. Run the lab with `BaseQuantity = 1`, or raise
+`AveragingTargetProfitDollars` and `DailyLossLimit` together. On MNQ also set
+`AveragingCommissionRt` to the MNQ round-turn (about $1.34) — the default is the NQ one.
 
 **Playback verification checklist (run once after any change to the module):**
 1. Live-account guard: enable on a non-Sim account name → one loud print, module off, normal bracket runs.
@@ -52,6 +62,12 @@ decision of any kind before the pre-registered sample (~680 trades, spec §8).
 5. Vol spike (or lower `AveragingVolAbortMult` to 1.0) → `vol abort` print, remaining levels drawn dark red, position and stop untouched.
 6. Trade closes → `averaging_lab_log.jsonl` gains exactly one line; `outcome`, `fills`, `minUnrealized` match what the chart showed.
 7. Rewind Playback mid-trade → no stale prints, next session arms cleanly.
+8. On one trade that actually added, check the JSONL `pnl` against NT8's own trade P&L for
+   that trade — they must match. The stack is priced off its running average, not off the
+   entry, and this is the only check that catches that arithmetic drifting.
+9. Reading `minUnrealized`: it samples bar highs/lows from entry to exit, so it does NOT
+   include the exit bar's intrabar excursion. Treat it as a floor on the drawdown, not the
+   drawdown.
 
 ## Status and limits
 
