@@ -143,7 +143,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         // OnBarUpdate. A flatten that is rejected or never fills leaves
         // _flattenPending stuck true, and FlattenAll's early return then makes
         // every later attempt — the panel's, the session's — a silent no-op.
+        // _flattenOrder is what makes the retry safe: the managed approach does
+        // NOT deduplicate market exits (its "one working order" rules exempt
+        // ExitLong/ExitShort), so releasing on elapsed time alone would stack a
+        // full-size exit per bar against an order that is merely SLOW — a halt
+        // or a limit lock — and the surplus fills would flip the position naked
+        // on reopen with the bracket already torn down. All three move together.
         private DateTime _flattenSentAt = DateTime.MinValue;
+        private Order _flattenOrder;
         private int _dir, _qty;
         private string _entrySig = "";
         private Order _entryOrder, _stopOrder;
@@ -458,17 +465,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                           + "seconds-based horizon (ATR gates, bar budgets, TriggerLife, ...) converts "
                           + "through it, so all of them inherit that approximation.");
 
-                // The flatten window runs [FlattenHhmm, SessionOpenHhmm) and
-                // InWindow calls an empty window empty, never "always". Set the
-                // two dials to the same clock time and the timed exit is simply
-                // GONE — no error, no flatten, positions ride into the session
-                // close. A silently disabled flatten is the exact failure this
-                // watchdog work exists to end, so it gets said out loud.
-                if (BbMath.HhmmToSecs(FlattenHhmm) == BbMath.HhmmToSecs(SessionOpenHhmm))
-                    Print("BreakBox WARNING: Flatten HHMM (" + FlattenHhmm
-                          + ") equals Session open HHMM (" + SessionOpenHhmm
-                          + ") — the flatten window is EMPTY and the timed exit is DISABLED. "
-                          + "Nothing will be closed on time. Move one of the two.");
+                // The flatten window runs [FlattenHhmm, SessionOpenHhmm), and
+                // BOTH ends of its length are a misconfiguration, not just one.
+                // Equal dials give an EMPTY window — InWindow calls that empty,
+                // never "always" — so the timed exit is silently GONE. And a
+                // flatten set AFTER the session open in session-day order gives
+                // a ~23-hour latch (1900 vs 1800 arms all day except 18:00-19:00),
+                // which looks perfectly ordinary on the panel while the strategy
+                // flattens on sight. 8h is the widest a session tail can sanely
+                // be; past that the number is telling you something.
+                int flatSecs = BbMath.HhmmToSecs(FlattenHhmm);
+                int openSecs = BbMath.HhmmToSecs(SessionOpenHhmm);
+                int windowSecs = (openSecs - flatSecs + 86400) % 86400;
+                if (windowSecs == 0 || windowSecs > 8 * 3600)
+                    Print("BreakBox WARNING: Flatten HHMM (" + FlattenHhmm + ") to Session open HHMM ("
+                          + SessionOpenHhmm + ") is a " + (windowSecs / 3600) + "h"
+                          + ((windowSecs % 3600) / 60).ToString("00", CultureInfo.InvariantCulture)
+                          + "m flatten window — "
+                          + (windowSecs == 0
+                             ? "EMPTY, so the timed exit is DISABLED and nothing closes on time."
+                             : "far wider than a session tail, so open positions are flattened on sight almost all day.")
+                          + " Check both dials.");
             }
             else if (State == State.Realtime)
             {
@@ -808,19 +825,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // stuck true and turned every later attempt — the session's and
                 // the panel's — into a silent no-op with the position still
                 // open. Clearing the flag is ALL this does; the TimeToFlatten
-                // latch below re-submits on this same bar. Both extra guards
-                // carry weight: the elapsed check leaves an exit that is
-                // legitimately in flight alone, and an already-flat position
-                // needs nothing from here because WentFlat clears the flag on
-                // its own. Wall clock, like every other watchdog here.
+                // latch below re-submits on this same bar. Every guard carries
+                // weight: the elapsed check leaves a fresh exit alone, an
+                // already-flat position needs nothing because WentFlat clears
+                // the flag itself, and !IsLive is the one that matters — it
+                // releases only for an exit that is genuinely DEAD (rejected,
+                // cancelled, or never adopted at all). A slow-but-working exit
+                // holds the guard shut forever, which is the whole point: a
+                // second market exit on top of a live one is not a retry, it is
+                // a naked reversal waiting for the tape to reopen. Wall clock,
+                // like every other watchdog here.
                 if (_flattenPending && _flattenSentAt != DateTime.MinValue
                     && (DateTime.Now - _flattenSentAt).TotalSeconds > ExitChangeWatchdogSec
-                    && Position.MarketPosition != MarketPosition.Flat)
+                    && Position.MarketPosition != MarketPosition.Flat
+                    && !IsLive(_flattenOrder))
                 {
                     Print("BreakBox: flatten unacknowledged after "
-                          + ExitChangeWatchdogSec + "s — retrying");
+                          + ExitChangeWatchdogSec + "s — clearing for retry");
                     _flattenPending = false;
                     _flattenSentAt = DateTime.MinValue;
+                    _flattenOrder = null;       // already proven dead by IsLive above
                 }
 
                 // The verdict on a stop cancel we did not ask for (raised in
@@ -1680,6 +1704,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // it. No submit went out, so nothing may be waiting on a fill.
                 _flattenPending = false;
                 _flattenSentAt = DateTime.MinValue;
+                _flattenOrder = null;
             }
         }
 
@@ -1695,12 +1720,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 CancelIfLive(_tierOrders[i]);
         }
 
+        // Still out there as far as the broker is concerned. PartFilled counts:
+        // it is neither Working nor Accepted, and treating it as finished is the
+        // same oversight that once abandoned a part-filled entry as a naked
+        // position. A null order is not live — nothing was ever adopted.
+        private static bool IsLive(Order o)
+        {
+            return o != null
+                   && o.OrderState != OrderState.Filled
+                   && o.OrderState != OrderState.Cancelled
+                   && o.OrderState != OrderState.Rejected;
+        }
+
         private void CancelIfLive(Order o)
         {
-            if (o == null)
-                return;
-            if (o.OrderState != OrderState.Filled && o.OrderState != OrderState.Cancelled
-                && o.OrderState != OrderState.Rejected)
+            if (IsLive(o))
                 CancelOrder(o);
         }
 
@@ -1787,6 +1821,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _inTrade = false;
             _flattenPending = false;
             _flattenSentAt = DateTime.MinValue;
+            _flattenOrder = null;
             _stopChangePending = false;
             _lastStopSent = double.NaN;
             _stopCancelAt = DateTime.MinValue;
@@ -2015,6 +2050,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _avgTpOrder = order;
                 if (orderState == OrderState.Working || orderState == OrderState.Accepted)
                     _avgTpChangePending = false;
+            }
+            else if (sig == SigFlatten)
+            {
+                // The retry watchdog asks this reference whether the flatten is
+                // still alive before it releases the guard, so it has to exist
+                // — FlattenAll kept none. Same cancel-path exclusion as the stop
+                // above: adopting a dying order would make a corpse read as a
+                // live exit and hold the watchdog shut forever, which is the
+                // failure mode this whole reference is here to prevent.
+                if (orderState != OrderState.Cancelled
+                    && orderState != OrderState.CancelPending
+                    && orderState != OrderState.CancelSubmitted)
+                    _flattenOrder = order;
             }
             else
             {
