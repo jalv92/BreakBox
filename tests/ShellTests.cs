@@ -159,6 +159,17 @@ public static class ShellTests
         // like a decision somebody made.
         T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(300), lo, hi), "03:00 overnight is out");
 
+        // The FLATTEN pair, which runs on the same helper but a different pair
+        // of dials: [FlattenHhmm, SessionOpenHhmm). It is a LATCH, not the
+        // one-minute window it used to be, so a bar closing well after the
+        // boundary must still flatten — and the evening block, which shares the
+        // seconds-of-day clock with the afternoon, must not be caught by it.
+        int flat = BbMath.HhmmToSecs(1600);
+        int open = BbMath.HhmmToSecs(1800);
+        T.Check(BbMath.InWindow(BbMath.HhmmToSecs(1630), flat, open), "16:30 is inside the flatten latch");
+        T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(1830), flat, open), "18:30 evening block is outside it");
+        T.Check(!BbMath.InWindow(BbMath.HhmmToSecs(1630), flat, flat), "flatten == session open is EMPTY, so the timed exit is off");
+
         // B9. The budget is a governor of LAST resort. 5 a day is a swing
         // number, and the design frequency is 8-12 fills per session (§13 step
         // 4) — the old cap would have silenced the strategy before lunch and

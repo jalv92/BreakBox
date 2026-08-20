@@ -76,6 +76,32 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SigTp3 = "BB_TP3";
         private const string SigFlatten = "BB_Flatten";
 
+        // Averaging lab (SIM-ONLY). One signal name per level so OnOrderUpdate
+        // can fork: a rejected add is survivable, a rejected protective order
+        // is not. N is user-defined (1..32), so the name is built, not fixed.
+        private const string AddSigPrefix = "BB_Add";
+        private const string SigAvgTp = "BB_AvgTp";
+        private const string SigOrphanExit = "BB_OrphanExit";
+
+        private static string AddSig(int level)
+        {
+            return AddSigPrefix + (level + 1);
+        }
+
+        // Matches ONLY "BB_Add<digits>" — by construction this cannot collide
+        // with SigAvgTp ("BB_AvgTp") or any other BB_* signal.
+        private static bool TryAddSigLevel(string sig, out int level)
+        {
+            level = -1;
+            if (sig == null || !sig.StartsWith(AddSigPrefix, StringComparison.Ordinal))
+                return false;
+            int n;
+            if (!int.TryParse(sig.Substring(AddSigPrefix.Length), out n) || n < 1)
+                return false;
+            level = n - 1;
+            return true;
+        }
+
         private static readonly string[] TierSig = { SigTp1, SigTp2, SigTp3 };
 
         // Order-layer mechanics, NOT dials. None of these has a counterpart on
@@ -113,6 +139,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Trade / order state. Every one of these is written BEFORE the submit
         // that makes it true (the order-event race).
         private bool _inTrade, _entryPending, _flattenPending;
+        // Wall clock of the flatten submit, for the retry watchdog in
+        // OnBarUpdate. A flatten that is rejected or never fills leaves
+        // _flattenPending stuck true, and FlattenAll's early return then makes
+        // every later attempt — the panel's, the session's — a silent no-op.
+        // _flattenOrder is what makes the retry safe: the managed approach does
+        // NOT deduplicate market exits (its "one working order" rules exempt
+        // ExitLong/ExitShort), so releasing on elapsed time alone would stack a
+        // full-size exit per bar against an order that is merely SLOW — a halt
+        // or a limit lock — and the surplus fills would flip the position naked
+        // on reopen with the bracket already torn down. All three move together.
+        private DateTime _flattenSentAt = DateTime.MinValue;
+        private Order _flattenOrder;
         private int _dir, _qty;
         private string _entrySig = "";
         private Order _entryOrder, _stopOrder;
@@ -200,6 +238,28 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly List<string> _drawTags = new List<string>();
         private int _tagSeq;
         private int _lastDrawnBoxId = -1;
+
+        // Averaging lab state. _avgQty/_avgAvgPx are OUR fill-accumulated
+        // position: inside an execution event NT8 has not necessarily updated
+        // Position yet ([[nt8-order-event-race]]), so the recompute reads these,
+        // never Position directly.
+        private AvgConfig _avgCfg;
+        private AvgPlan _avgPlan;
+        private bool _avgArmed;
+        private int _avgQty;
+        private double _avgAvgPx;
+        private Order _avgTpOrder;
+        private volatile bool _avgTpChangePending;
+        private DateTime _avgTpSentAt = DateTime.MinValue;
+        private double _avgLastTpSent = double.NaN;
+        private int _avgTpLastQty;
+        private AvgTradeLog _avgRec;
+        private string _avgLogPath = "";
+        private bool _avgSimBlockPrinted;
+        private readonly int[] _avgFireIdx = new int[AvgConfig.MAX_LEVELS];
+        // Realised points of the averaging stack, booked against the LIVE
+        // average instead of P0 — see the exit-fill block in OnExecutionUpdate.
+        private double _avgRealizedPts;
 
         #endregion
 
@@ -297,7 +357,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // ---- Session and governor
                 EntryWindowStartHhmm = 930;
                 EntryWindowEndHhmm = 1545;
-                FlattenHhmm = 1655;
+                FlattenHhmm = 1600;
                 MaxTradesPerBox = 1;
                 MaxTradesPerDay = 30;
                 // ON. §7.1 makes this load-bearing: with TP1 at 0.50R taking
@@ -313,12 +373,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ShowBox = true;
                 ShowLevels = true;
                 ShowPanel = true;
+
+                // ---- Averaging lab (SIM-ONLY). Defaults per the 2026-08-19 spec.
+                // G defaults to 150, not 100: the TP floor needs G >= QN*(8*v - c),
+                // which is $102.72 on NQ at q0=1, N=2 — a $100 default would
+                // refuse to arm out of the box.
+                AveragingEnabled = false;
+                AveragingMaxAdds = 2;
+                AveragingAddQty = 1;
+                AveragingBudgetDollars = 0;
+                AveragingBudgetFraction = 0.5;
+                AveragingTargetProfitDollars = 150;
+                AveragingStopBufferTicks = 8;
+                AveragingSpacingSource = AvgSpacingSource.Auto;
+                AveragingSpacingAtrMult = 1.0;
+                AveragingConfirmBars = 1;
+                AveragingVolAbortMult = 2.0;
+                AveragingNoAddsFinalMinutes = 15;
+                AveragingCommissionRt = 5.76;
+                AveragingSlippageReserveTicks = 2;
             }
             else if (State == State.Configure)
             {
                 _bracket = new BbBracket();
                 _engState = new BbEngineState();
                 _cloudState = new BbCloudState();
+
+                // Under EntryHandling.AllEntries NT8 SILENTLY ignores any Enter*
+                // beyond this budget — without this line every add is discarded
+                // and the module looks armed while doing nothing. Set here, not
+                // in SetDefaults: property values are settled by Configure.
+                EntriesPerDirection = AveragingEnabled ? AveragingMaxAdds + 1 : 1;
             }
             else if (State == State.DataLoaded)
             {
@@ -359,6 +444,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _swings = new SwingDetector(SwingStrength);
                 OpenHistory();
 
+                _avgLogPath = System.IO.Path.Combine(
+                    System.IO.Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "BreakBox"),
+                    "averaging_lab_log.jsonl");
+
                 // v2's scaling contract expresses every horizon in seconds and
                 // converts it through BbScale.Bars(_barSec) — a 30s chart is an
                 // intended configuration, not "a different experiment" (that was
@@ -375,6 +464,28 @@ namespace NinjaTrader.NinjaScript.Strategies
                           + "above is ESTIMATED from history gaps, not exact wall-clock time. Every "
                           + "seconds-based horizon (ATR gates, bar budgets, TriggerLife, ...) converts "
                           + "through it, so all of them inherit that approximation.");
+
+                // The flatten window runs [FlattenHhmm, SessionOpenHhmm), and
+                // BOTH ends of its length are a misconfiguration, not just one.
+                // Equal dials give an EMPTY window — InWindow calls that empty,
+                // never "always" — so the timed exit is silently GONE. And a
+                // flatten set AFTER the session open in session-day order gives
+                // a ~23-hour latch (1900 vs 1800 arms all day except 18:00-19:00),
+                // which looks perfectly ordinary on the panel while the strategy
+                // flattens on sight. 8h is the widest a session tail can sanely
+                // be; past that the number is telling you something.
+                int flatSecs = BbMath.HhmmToSecs(FlattenHhmm);
+                int openSecs = BbMath.HhmmToSecs(SessionOpenHhmm);
+                int windowSecs = (openSecs - flatSecs + 86400) % 86400;
+                if (windowSecs == 0 || windowSecs > 8 * 3600)
+                    Print("BreakBox WARNING: Flatten HHMM (" + FlattenHhmm + ") to Session open HHMM ("
+                          + SessionOpenHhmm + ") is a " + (windowSecs / 3600) + "h"
+                          + ((windowSecs % 3600) / 60).ToString("00", CultureInfo.InvariantCulture)
+                          + "m flatten window — "
+                          + (windowSecs == 0
+                             ? "EMPTY, so the timed exit is DISABLED and nothing closes on time."
+                             : "far wider than a session tail, so open positions are flattened on sight almost all day.")
+                          + " Check both dials.");
             }
             else if (State == State.Realtime)
             {
@@ -569,6 +680,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "dprofit=" + DailyProfitTarget.ToString("0.##", CultureInfo.InvariantCulture),
                 "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
 
+                // 07. Averaging lab (§7). The module ON and the module OFF are
+                // two different strategies — sharing one digest would blend
+                // their journal curves into a single line that describes
+                // neither. AveragingEnabled leads because it is the switch;
+                // the rest change the grid the switch turns on.
+                "avg=" + (AveragingEnabled ? "1" : "0"),
+                "avgmax=" + AveragingMaxAdds.ToString(CultureInfo.InvariantCulture),
+                "avgq=" + AveragingAddQty.ToString(CultureInfo.InvariantCulture),
+                "avgbuddol=" + AveragingBudgetDollars.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgbud=" + AveragingBudgetFraction.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgg=" + AveragingTargetProfitDollars.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgsbuf=" + AveragingStopBufferTicks.ToString(CultureInfo.InvariantCulture),
+                "avgspace=" + AveragingSpacingSource,
+                "avgatr=" + AveragingSpacingAtrMult.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgconf=" + AveragingConfirmBars.ToString(CultureInfo.InvariantCulture),
+                "avgvol=" + AveragingVolAbortMult.ToString("0.###", CultureInfo.InvariantCulture),
+                "avgcut=" + AveragingNoAddsFinalMinutes.ToString(CultureInfo.InvariantCulture),
+                "avgcomm=" + AveragingCommissionRt.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgslip=" + AveragingSlippageReserveTicks.ToString(CultureInfo.InvariantCulture),
+
                 "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
             }));
         }
@@ -688,10 +819,65 @@ namespace NinjaTrader.NinjaScript.Strategies
                     SubmitStop("watchdog");
                 }
 
+                // The same idea for the flatten. FlattenAll early-returns while
+                // _flattenPending is true and only WentFlat clears it, so a
+                // flatten exit that was rejected or never filled left the flag
+                // stuck true and turned every later attempt — the session's and
+                // the panel's — into a silent no-op with the position still
+                // open. Clearing the flag is ALL this does; the TimeToFlatten
+                // latch below re-submits on this same bar. Every guard carries
+                // weight: the elapsed check leaves a fresh exit alone, an
+                // already-flat position needs nothing because WentFlat clears
+                // the flag itself, and !IsLive is the one that matters — it
+                // releases only for an exit that is genuinely DEAD (rejected,
+                // cancelled, or never adopted at all). A slow-but-working exit
+                // holds the guard shut forever, which is the whole point: a
+                // second market exit on top of a live one is not a retry, it is
+                // a naked reversal waiting for the tape to reopen. Wall clock,
+                // like every other watchdog here.
+                if (_flattenPending && _flattenSentAt != DateTime.MinValue
+                    && (DateTime.Now - _flattenSentAt).TotalSeconds > ExitChangeWatchdogSec
+                    && Position.MarketPosition != MarketPosition.Flat
+                    && !IsLive(_flattenOrder))
+                {
+                    Print("BreakBox: flatten unacknowledged after "
+                          + ExitChangeWatchdogSec + "s — clearing for retry");
+                    _flattenPending = false;
+                    _flattenSentAt = DateTime.MinValue;
+                    _flattenOrder = null;       // already proven dead by IsLive above
+                }
+
+                // The verdict on a stop cancel we did not ask for (raised in
+                // OnOrderUpdate). Deferred on purpose: the alarm fires on the
+                // Cancelled event, but a cancel-replace is TWO events, and
+                // judging on the first one convicts our own machinery. After
+                // the grace window, a working stop means the position got
+                // re-covered — by our resubmit, or by the human dragging the
+                // stop, which NT8 may deliver as a cancel-replace that
+                // re-adopts under the same signal name. A move must never read
+                // as a pull. Only a still-uncovered position is a real pull.
+                if (_stopCancelAt != DateTime.MinValue
+                    && (DateTime.Now - _stopCancelAt).TotalSeconds > BracketCancelGraceSec
+                    && !_stopChangePending && !_bracket.StopCancelled)
+                {
+                    bool covered = _stopOrder != null
+                                   && (_stopOrder.OrderState == OrderState.Working
+                                       || _stopOrder.OrderState == OrderState.Accepted);
+                    if (!covered)
+                    {
+                        BbExits.AdoptManualStop(_bracket, _bracket.StopPx, true);
+                        Print("BreakBox: stop cancelled by hand — not resubmitting");
+                    }
+                    _stopCancelAt = DateTime.MinValue;
+                }
+
                 var d = BbExits.OnBarClose(_exitCfg, _bracket, bar, _atr.Value);
                 if (d.StopMoved)
                     SubmitStop("bar:" + d.Why);
                 DrawLevels();
+
+                if (_avgArmed)
+                    AvgOnBar(bar, secs);
             }
 
             if (TimeToFlatten(secs))
@@ -827,10 +1013,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (!_inTrade && !_entryPending)
                 return false;
-            int flat = BbMath.HhmmToSecs(FlattenHhmm);
-            // Only fires on the bar that CROSSES the boundary, which on a 1m
-            // series is the minute the flatten time falls in.
-            return secs >= flat && secs < flat + 60;
+            // A LATCH, not a one-minute window. The old form fired only if a bar
+            // happened to close inside the single minute the boundary fell in —
+            // on a thin tape, or for a position opened after it, the timed exit
+            // never happened at all and the trade rode on. The window runs from
+            // the flatten time to the SESSION OPEN, which is what keeps the
+            // evening block (same seconds-of-day, next session) out of it;
+            // InWindow owns the wraparound.
+            return BbMath.InWindow(secs, BbMath.HhmmToSecs(FlattenHhmm),
+                                         BbMath.HhmmToSecs(SessionOpenHhmm));
         }
 
         // §13 step 1 — the histogram increment. A depth of -1 (the engine
@@ -1101,6 +1292,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Prices and submits the whole bracket. Called once, from the entry fill.
         private void OpenBracket(double fillPx, int qty)
         {
+            // Per-trade, and first: an alarm belongs to the trade that raised
+            // it. Both bracket flavours come through here.
+            _stopCancelAt = DateTime.MinValue;
+
+            if (AveragingEnabled)
+            {
+                string why;
+                AvgPlan plan = TryArmAveraging(fillPx, qty, out why);
+                if (plan != null)
+                {
+                    OpenAveragingBracket(fillPx, qty, plan);
+                    return;
+                }
+                // A refusal is never silent and never blocks the trade.
+                Print("BreakBox AVG: not armed — " + why + " — trade runs the normal bracket");
+            }
+
             var inp = StopInputs(_pendingAction);
             BbExits.OnEntryFill(_exitCfg, _bracket, _dir, fillPx, qty, _atr.Value, _atr.IsWarm, inp);
 
@@ -1112,6 +1320,300 @@ namespace NinjaTrader.NinjaScript.Strategies
             SubmitStop("init");
             for (int i = 0; i < _bracket.Tiers; i++)
                 SubmitTier(i);
+            DrawLevels();
+        }
+
+        // Every reason NOT to average, checked in cheap-to-expensive order.
+        // Returns null with `why` set, or an armed plan.
+        private AvgPlan TryArmAveraging(double fillPx, int qty, out string why)
+        {
+            // SIM-ONLY guard (spec §4): live accounts never arm, no override.
+            // Fails CLOSED on an unverifiable (null) Account — never treat
+            // "can't tell" as "safe to arm".
+            if (State == State.Realtime
+                && (Account == null
+                    || (!Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
+                        && !Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase))))
+            {
+                if (!_avgSimBlockPrinted)
+                {
+                    _avgSimBlockPrinted = true;
+                    Print("BreakBox AVG: account '" + (Account != null ? Account.Name : "unknown account")
+                          + "' is not Sim/Playback — averaging lab is SIM-ONLY and stays OFF");
+                }
+                why = "live_account";
+                return null;
+            }
+
+            // No arming inside the pre-close cutoff: a dug grid meeting the
+            // session flatten is a certain -L on the whole stack.
+            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
+            if (secs >= BbMath.HhmmToSecs(FlattenHhmm) - AveragingNoAddsFinalMinutes * 60)
+            {
+                why = "inside_close_cutoff";
+                return null;
+            }
+
+            // The trade's slice of what is LEFT of today's budget — a later
+            // trade in a losing day gets a smaller grid automatically. A
+            // direct dollar budget (AveragingBudgetDollars > 0) overrides the
+            // fraction, but either way the day-left cap binds: one trade may
+            // never out-risk the day.
+            double dayLossSoFar = _dayPnl < 0 ? -_dayPnl : 0.0;
+            double dayLeft = DailyLossLimit - dayLossSoFar;
+            double lArm = AveragingBudgetDollars > 0.0
+                ? Math.Min(AveragingBudgetDollars, dayLeft)
+                : Math.Min(AveragingBudgetFraction * DailyLossLimit, dayLeft);
+            if (lArm <= 0.0)
+            {
+                why = "no_day_budget_left";
+                return null;
+            }
+            // Visibility: a direct budget silently capped by the day reads as a solver bug.
+            if (AveragingBudgetDollars > 0.0 && lArm < AveragingBudgetDollars)
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: budget {0:0.##} capped by remaining daily loss ({1:0.##} of {2:0.##} left) — raise Daily loss limit (06. Session) to use the full budget",
+                    AveragingBudgetDollars, dayLeft, DailyLossLimit));
+
+            if (!_atr.IsWarm || _atr.Value <= 0.0)
+            {
+                why = "atr_cold";
+                return null;
+            }
+
+            // Structural spacing candidate (Arm takes the min with the budget d,
+            // so structure only ever compresses the grid).
+            var box = _engState != null ? _engState.Box : null;
+            bool boxUsable = box != null && box.High > box.Low;
+            bool useBox;
+            switch (AveragingSpacingSource)
+            {
+                case AvgSpacingSource.BoxHeight:
+                    if (!boxUsable)
+                    {
+                        why = "no_box_for_spacing";
+                        return null;
+                    }
+                    useBox = true;
+                    break;
+                case AvgSpacingSource.AtrMult:
+                    useBox = false;
+                    break;
+                default: // Auto
+                    useBox = _owningEngine == BbEntryEngine.Break && boxUsable;
+                    break;
+            }
+            double dStructTicks = useBox
+                ? (box.High - box.Low) / TickSize
+                : AveragingSpacingAtrMult * _atr.Value / TickSize;
+            string spacing = useBox ? "box" : "atr";
+
+            _avgCfg = new AvgConfig();
+            _avgCfg.TickSize = TickSize;
+            _avgCfg.TickValue = Instrument.MasterInstrument.PointValue * TickSize;
+            _avgCfg.MaxAdds = AveragingMaxAdds;
+            _avgCfg.AddQty = AveragingAddQty;
+            _avgCfg.BudgetDollars = lArm;
+            _avgCfg.TargetDollars = AveragingTargetProfitDollars;
+            _avgCfg.StopBufferTicks = AveragingStopBufferTicks;
+            _avgCfg.CommissionRt = AveragingCommissionRt;
+            _avgCfg.SlippageReserveTicks = AveragingSlippageReserveTicks;
+            _avgCfg.ConfirmBars = AveragingConfirmBars;
+            _avgCfg.VolAbortMult = AveragingVolAbortMult;
+
+            AvgPlan plan = AvgEngine.Arm(_avgCfg, _dir, fillPx, qty, dStructTicks, _atr.Value);
+            if (!plan.Armed)
+            {
+                why = plan.RefusedWhy;
+                return null;
+            }
+
+            _avgRec = new AvgTradeLog();
+            _avgRec.EntryTs = _entryTime;
+            _avgRec.Dir = _dir;
+            _avgRec.Engine = _owningEngine.ToString();
+            _avgRec.EntryPx = fillPx;
+            _avgRec.EntryQty = qty;
+            _avgRec.DTicks = plan.DTicks;
+            _avgRec.STicks = plan.STicks;
+            _avgRec.Levels = plan.Levels;
+            _avgRec.LArm = lArm;
+            _avgRec.LEff = plan.LEff;
+            _avgRec.G = AveragingTargetProfitDollars;
+            _avgRec.StopPx = plan.StopPx;
+            _avgRec.SpacingSource = spacing;
+            _avgRec.Fills.Add(new AvgFillRec { Ts = _entryTime, Level = -1, PlannedPx = fillPx, FillPx = fillPx, Qty = qty });
+
+            why = "";
+            return plan;
+        }
+
+        // The averaging bracket: ONE stop for the whole stack (SubmitStop, with
+        // fromEntrySignal "" while armed) and ONE dynamic TP. The 3-tier bracket
+        // is never armed for this trade — _bracket.Tiers stays 0, which keeps
+        // SubmitTier, OnTierFill and the breakeven/trail paths inert by
+        // construction, while WentFlat/journal/panel read the same fields they
+        // always read.
+        private void OpenAveragingBracket(double fillPx, int qty, AvgPlan plan)
+        {
+            _avgArmed = true;
+            _avgPlan = plan;
+            _avgQty = qty;
+            _avgAvgPx = fillPx;
+            _avgRealizedPts = 0.0;
+            _avgSimBlockPrinted = false;
+
+            _bracket.Dir = _dir;
+            _bracket.EntryPx = fillPx;
+            _bracket.AtrRef = _atr.IsWarm ? _atr.Value : 0.0;
+            _bracket.Mfe = fillPx;
+            _bracket.QtyTotal = qty;
+            _bracket.QtyOpen = qty;
+            _bracket.BeApplied = true;          // no tiers -> inert, but explicit
+            _bracket.TrailArmed = false;
+            _bracket.RealizedPts = 0.0;
+            _bracket.QtyClosed = 0;
+            _bracket.StopCancelled = false;
+            _bracket.BarsInTrade = 0;
+            _bracket.Tiers = 0;
+            for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
+            {
+                _bracket.TargetPx[i] = 0.0;
+                _bracket.TierFilled[i] = false;
+            }
+            _bracket.StopPx = plan.StopPx;
+            _bracket.InitialStopPx = plan.StopPx;
+            _bracket.R = Math.Abs(fillPx - plan.StopPx);
+            _bracket.StopWhy = "avg_grid";
+
+            var u = AvgEngine.OnFill(_avgCfg, plan, fillPx, qty);
+            _bracket.StopPx = u.StopPx;
+
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG armed {0} q0={1} d={2}t s={3}t levels={4} LArm={5:0.##} LEff={6:0.##} stop {7} tp {8} ({9})",
+                _dir > 0 ? "LONG" : "SHORT", qty, plan.DTicks, plan.STicks, plan.Levels,
+                _avgRec.LArm, plan.LEff, _bracket.StopPx, u.TpPx, _avgRec.SpacingSource));
+
+            SubmitStop("avg:init");
+            SubmitAvgTp(u.TpPx, "init");
+            DrawLevels();
+        }
+
+        // The whole-stack dynamic TP. Cancel-replace by reference: the ref is
+        // nulled BEFORE the resubmit so our own in-stack Cancelled echo can never
+        // be misread ([[latigobreak-project]] commit 575c524 pattern).
+        private void SubmitAvgTp(double px, string why)
+        {
+            if (!_inTrade || !_avgArmed)
+                return;
+            int qty = _bracket.QtyOpen;
+            if (qty < 1)
+                return;
+            if (!double.IsNaN(_avgLastTpSent) && Math.Abs(px - _avgLastTpSent) < TickSize / 2.0
+                && qty == _avgTpLastQty)
+                return;
+
+            _avgTpOrder = null;
+            _avgTpChangePending = true;
+            _avgTpSentAt = DateTime.Now;
+            _avgLastTpSent = px;
+            _avgTpLastQty = qty;
+
+            if (_dir > 0) ExitLongLimit(0, true, qty, px, SigAvgTp, "");
+            else ExitShortLimit(0, true, qty, px, SigAvgTp, "");
+        }
+
+        // The averaging bar loop: TP watchdog, one-way aborts, then the
+        // confirmation machine. Adds are MARKET orders fired here, on the main
+        // thread at bar close — never from OnMarketData
+        // ([[nt8-orders-from-marketdata-thread-crash]]).
+        private void AvgOnBar(BbBar bar, int secs)
+        {
+            if (_avgPlan == null || _avgRec == null)
+                return;
+
+            // Telemetry: the compact bar path (offline counterfactuals) and the
+            // prop-firm axis (worst open P&L, intrabar extremes).
+            if (_avgRec.Bars.Count < AvgTradeLog.MAX_BARS)
+                _avgRec.Bars.Add(new AvgBarRec { Ts = bar.Time, High = bar.High, Low = bar.Low, Close = bar.Close });
+            else
+                _avgRec.BarsCapped = true;
+            double worstPx = _dir > 0 ? bar.Low : bar.High;
+            double openPnl = (worstPx - _avgAvgPx) * _dir * _avgQty * Instrument.MasterInstrument.PointValue;
+            if (openPnl < _avgRec.MinUnrealized)
+                _avgRec.MinUnrealized = openPnl;
+
+            // TP watchdog — same shape as the stop's (line ~681).
+            if (_avgTpChangePending
+                && (DateTime.Now - _avgTpSentAt).TotalSeconds > ExitChangeWatchdogSec)
+            {
+                Print("BreakBox AVG: TP modify unacknowledged after " + ExitChangeWatchdogSec
+                      + "s — resubmitting");
+                _avgTpChangePending = false;
+                double px = _avgLastTpSent;
+                _avgLastTpSent = double.NaN;
+                _avgTpLastQty = 0;
+                SubmitAvgTp(px, "watchdog");
+            }
+
+            // One-way aborts: volatility expansion, then the pre-close cutoff.
+            if (AvgEngine.VolAbort(_avgCfg, _avgPlan, _atr.Value))
+            {
+                _avgRec.AddsAborted = true;
+                _avgRec.AbortWhy = "vol_expansion";
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: vol abort — ATR {0:0.##} > {1:0.#}x entry ATR {2:0.##}; remaining adds dead, position and stop stay",
+                    _atr.Value, AveragingVolAbortMult, _avgPlan.EntryAtr));
+            }
+            if (!_avgPlan.AddsAborted
+                && secs >= BbMath.HhmmToSecs(FlattenHhmm) - AveragingNoAddsFinalMinutes * 60)
+            {
+                _avgPlan.AddsAborted = true;
+                _avgRec.AddsAborted = true;
+                _avgRec.AbortWhy = "close_cutoff";
+                Print("BreakBox AVG: inside the pre-close cutoff — no more adds this trade");
+            }
+
+            int n = AvgEngine.OnBarClosed(_avgCfg, _avgPlan, bar.High, bar.Low, bar.Close, _avgFireIdx);
+            for (int i = 0; i < n; i++)
+                SubmitAdd(_avgFireIdx[i]);
+        }
+
+        private void SubmitAdd(int level)
+        {
+            int q = AveragingAddQty;
+            string sig = AddSig(level);
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG: level {0} confirmed @ {1} — adding {2} at market ({3})",
+                level + 1, _avgPlan.LevelPx[level], q, sig));
+            if (_dir > 0) EnterLong(0, q, sig);
+            else EnterShort(0, q, sig);
+        }
+
+        private void OnAddExecution(int level, double price, int qty, DateTime time)
+        {
+            _avgAvgPx = (_avgAvgPx * _avgQty + price * qty) / (_avgQty + qty);
+            _avgQty += qty;
+            _bracket.QtyTotal = _avgQty;
+            _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;
+
+            _avgRec.Fills.Add(new AvgFillRec
+            {
+                Ts = time, Level = level,
+                PlannedPx = _avgPlan.LevelPx[level], FillPx = price, Qty = qty
+            });
+
+            var u = AvgEngine.OnFill(_avgCfg, _avgPlan, _avgAvgPx, _avgQty);
+            _bracket.StopPx = u.StopPx;
+
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG: add{0} fill {1} @ {2} -> qty {3} avg {4} stop {5}{6} tp {7}",
+                level + 1, qty, price, _avgQty, _avgAvgPx, u.StopPx,
+                u.StopMoved ? " (budget ratchet)" : "", u.TpPx));
+
+            _lastStopSent = double.NaN;                 // defeat the dedupe, tier-resize idiom
+            SubmitStop("avg:add");
+            SubmitAvgTp(u.TpPx, "add");
             DrawLevels();
         }
 
@@ -1140,12 +1642,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!double.IsNaN(_lastStopSent) && Math.Abs(px - _lastStopSent) < TickSize / 2.0)
                 return;                                 // nothing changed
 
+            // Cancel-replace by reference, same as SubmitAvgTp: the ref is
+            // dropped BEFORE the submit, so the Cancelled event our own replace
+            // produces carries an order that matches nothing and the hand-pull
+            // detector in OnOrderUpdate cannot misread it. It goes here and not
+            // at the top of the method on purpose — an early return above would
+            // otherwise leave us holding no reference to a stop that is still
+            // working.
+            _stopOrder = null;
             _stopChangePending = true;
             _stopChangeSentAt = DateTime.Now;
             _lastStopSent = px;
 
-            if (_dir > 0) ExitLongStopMarket(0, true, qty, px, SigStop, _entrySig);
-            else ExitShortStopMarket(0, true, qty, px, SigStop, _entrySig);
+            string fromSig = _avgArmed ? "" : _entrySig;
+            if (_dir > 0) ExitLongStopMarket(0, true, qty, px, SigStop, fromSig);
+            else ExitShortStopMarket(0, true, qty, px, SigStop, fromSig);
         }
 
         private void SubmitTier(int i)
@@ -1167,18 +1678,33 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (_flattenPending)
                 return;
+            // Tracker before the submit, same house rule as SubmitStop: the
+            // watchdog in OnBarUpdate reads this stamp, and a flatten whose
+            // submit fires before the clock is set is a flatten it can never
+            // time out.
             _flattenPending = true;
+            _flattenSentAt = DateTime.Now;
             _exitReason = why;
 
             CancelWorkingEntry(why);
             if (Position.MarketPosition != MarketPosition.Flat)
             {
-                if (_dir > 0) ExitLong(SigFlatten, _entrySig);
-                else ExitShort(SigFlatten, _entrySig);
+                // Same fork as SubmitStop, for the same reason: a named
+                // fromEntrySignal closes only THAT entry's quantity, and an
+                // averaging stack was built under BB_Long + one BB_Add<N> per level.
+                // Naming the entry here left every add in the market, unstopped,
+                // after a session flatten or a rejected leg.
+                string fromSig = _avgArmed ? "" : _entrySig;
+                if (_dir > 0) ExitLong(SigFlatten, fromSig);
+                else ExitShort(SigFlatten, fromSig);
             }
             else
             {
+                // Nothing to close — the working entry above was the whole of
+                // it. No submit went out, so nothing may be waiting on a fill.
                 _flattenPending = false;
+                _flattenSentAt = DateTime.MinValue;
+                _flattenOrder = null;
             }
         }
 
@@ -1189,16 +1715,26 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void CancelBracketLegs()
         {
             CancelIfLive(_stopOrder);
+            CancelIfLive(_avgTpOrder);
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
                 CancelIfLive(_tierOrders[i]);
         }
 
+        // Still out there as far as the broker is concerned. PartFilled counts:
+        // it is neither Working nor Accepted, and treating it as finished is the
+        // same oversight that once abandoned a part-filled entry as a naked
+        // position. A null order is not live — nothing was ever adopted.
+        private static bool IsLive(Order o)
+        {
+            return o != null
+                   && o.OrderState != OrderState.Filled
+                   && o.OrderState != OrderState.Cancelled
+                   && o.OrderState != OrderState.Rejected;
+        }
+
         private void CancelIfLive(Order o)
         {
-            if (o == null)
-                return;
-            if (o.OrderState != OrderState.Filled && o.OrderState != OrderState.Cancelled
-                && o.OrderState != OrderState.Rejected)
+            if (IsLive(o))
                 CancelOrder(o);
         }
 
@@ -1222,6 +1758,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pts += (exitPx - _bracket.EntryPx) * _bracket.Dir * residual;
             double pnl = pts * Instrument.MasterInstrument.PointValue;
 
+            // The same arithmetic on the averaging basis. Both survive: `pts`
+            // keeps pricing every non-averaging trade exactly as before, and the
+            // journal reaches for the average-basis pair only when the trade
+            // really was a stack.
+            double avgPts = 0.0, avgPnl = 0.0;
+            if (_avgArmed)
+            {
+                avgPts = _avgRealizedPts;
+                if (residual > 0)
+                    avgPts += (exitPx - _avgAvgPx) * _bracket.Dir * residual;
+                avgPnl = avgPts * Instrument.MasterInstrument.PointValue;
+            }
+
             // Journalled BEFORE the bracket is torn down: `_bracket.Dir` is
             // zeroed twelve lines below, and reading it after is how a history
             // file fills up with dir=0 rows that plot but mean nothing.
@@ -1236,12 +1785,46 @@ namespace NinjaTrader.NinjaScript.Strategies
             rec.Engine = _owningEngine.ToString();
             rec.ExitReason = _exitReason.Length > 0 ? _exitReason : "unknown";
             rec.CfgHash = _cfgHash;
+            if (_avgArmed)
+            {
+                // Entry stays P0 — that IS where the trade started — but the cash
+                // and the single exit price that reproduces it come off the
+                // average basis, the only one that matches the account.
+                rec.Pnl = avgPnl;
+                rec.Exit = BbExits.ExitPxFromPts(_avgAvgPx, _bracket.Dir, avgPts, _bracket.QtyTotal);
+            }
             AppendHistory(rec);
+
+            if (_avgArmed)
+            {
+                _avgRec.Pnl = avgPnl;
+                _avgRec.Outcome = _exitReason == SigAvgTp ? "tp"
+                                : _exitReason == SigStop ? "stop"
+                                : (_exitReason == "session_window" || _exitReason == SigFlatten) ? "session_flatten"
+                                : "other";
+                if (State == State.Realtime)        // the lab logs live sims only; backtests stay off the file
+                {
+                    try
+                    {
+                        System.IO.File.AppendAllText(_avgLogPath, AvgLog.Serialise(_avgRec) + Environment.NewLine);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print("BreakBox AVG: lab log NOT written (" + ex.Message + ")");
+                    }
+                }
+                Print("BreakBox AVG: trade closed — " + _avgRec.Outcome + ", pnl "
+                      + avgPnl.ToString("C2") + ", min open " + _avgRec.MinUnrealized.ToString("C2")
+                      + ", fills " + _avgRec.Fills.Count);
+            }
 
             _inTrade = false;
             _flattenPending = false;
+            _flattenSentAt = DateTime.MinValue;
+            _flattenOrder = null;
             _stopChangePending = false;
             _lastStopSent = double.NaN;
+            _stopCancelAt = DateTime.MinValue;
 
             // Cancel whatever is still resting, BEFORE the references are dropped.
             // Nothing in this strategy ever cancelled these, and every one was
@@ -1255,6 +1838,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             _entryOrder = null;
             _stopOrder = null;
+            _avgTpOrder = null;
+            _avgArmed = false;
+            _avgPlan = null;
+            _avgRec = null;
+            _avgQty = 0;
+            _avgAvgPx = 0.0;
+            _avgRealizedPts = 0.0;
+            _avgTpChangePending = false;
+            _avgLastTpSent = double.NaN;
+            _avgTpLastQty = 0;
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
                 _tierOrders[i] = null;
 
@@ -1284,14 +1877,80 @@ namespace NinjaTrader.NinjaScript.Strategies
             // before any branch below decides what else to do about it — the
             // tier branch used to fall through to the close-out, so counting it
             // inside both would have double-booked the last tier.
-            if (_inTrade && (sig == SigStop || sig == SigFlatten || IsTierSig(sig)))
+            if (_inTrade && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp || IsTierSig(sig)))
+            {
                 BbExits.AddExitFill(_bracket, price, quantity);
+                if (_avgArmed && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp))
+                {
+                    // The stack books its own realised points, against the LIVE
+                    // average rather than P0. Adds fill at better prices than the
+                    // entry, so BbExits' P0 basis overstates the loss on a stopped
+                    // stack and understates the win on a TP — the same order of
+                    // magnitude as G itself at the NQ defaults. BbExits is left
+                    // alone on purpose: for the base 3-tier bracket the entry
+                    // price IS the basis, and that path must not move.
+                    _avgRealizedPts += (price - _avgAvgPx) * _dir * quantity;
+                    // Level -2 = an exit execution. PlannedPx carries the average
+                    // basis at that moment, which is what makes the competitor arm
+                    // computable offline from the JSONL alone. (-1 is the entry.)
+                    _avgRec.Fills.Add(new AvgFillRec
+                    {
+                        Ts = time, Level = -2,
+                        PlannedPx = _avgAvgPx, FillPx = price, Qty = quantity
+                    });
+                    if (sig == SigAvgTp)
+                    {
+                        _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;   // mirror of OnAddExecution: books stay truthful on the averaging exit
+
+                        // A PARTIAL TP fill shrank the stack, and the tier
+                        // branch that re-covers the base bracket never runs here
+                        // (an averaging trade has Tiers == 0). Without this, NT8
+                        // cancels the now-oversized stop on its own, that cancel
+                        // ref-matches, and the deferred verdict latches
+                        // StopCancelled on a stack that still has contracts in
+                        // the market. Same idiom as the tier branch, and gated on
+                        // QtyOpen so the fill that EMPTIED the position falls
+                        // through to the close-out below instead.
+                        if (_bracket.QtyOpen > 0)
+                        {
+                            _stopOrder = null;
+                            _lastStopSent = double.NaN;
+                            SubmitStop("avgtp:resize");
+                        }
+                    }
+                }
+            }
 
             // Entry fill. Gated on the signal NAME, not on a bool: by the time
             // this arrives, another submit may already have flipped the flag.
             if ((sig == SigLong || sig == SigShort) && execution.Order.OrderState == OrderState.Filled)
             {
                 AdoptEntryFill(price, execution.Order.Filled, time);
+                return;
+            }
+
+            // An add that fills AFTER the position went flat — the stop and the
+            // add raced and the add landed second. Nothing downstream would catch
+            // it: _avgArmed is already false, so the add branch below is dead and
+            // the contracts would sit in the market with no stop behind them. The
+            // direction comes off the order, never off _dir, which WentFlat zeroed.
+            int _orphanLvl;
+            if (TryAddSigLevel(sig, out _orphanLvl) && quantity > 0 && !_inTrade)
+            {
+                Print("BreakBox AVG: ORPHAN add fill after flat — exiting " + quantity + " at market");
+                if (execution.Order.IsLong) ExitLong(0, quantity, SigOrphanExit, sig);
+                else ExitShort(0, quantity, SigOrphanExit, sig);
+                return;
+            }
+
+            // An add executed. Accumulate OUR average/quantity (Position may be
+            // stale in-stack), recompute stop+TP from the REAL numbers, resize.
+            int _addLvl;
+            if (_avgArmed && _inTrade && TryAddSigLevel(sig, out _addLvl) && quantity > 0
+                && (execution.Order.OrderState == OrderState.Filled
+                    || execution.Order.OrderState == OrderState.PartFilled))
+            {
+                OnAddExecution(_addLvl, price, quantity, time);
                 return;
             }
 
@@ -1308,6 +1967,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // approach will shrink an oversized exit on its own, but
                     // doing it explicitly is what keeps _lastStopSent, the
                     // bracket and the platform describing the same order.
+                    //
+                    // The ref is dropped FIRST because that auto-shrink cancels
+                    // the old stop on its own initiative, at a moment we do not
+                    // control — possibly before this line. Nulling here makes
+                    // that Cancelled unmatchable too, so the hand-pull detector
+                    // reads NT8's housekeeping for what it is. This is the bug
+                    // that left a 1-lot runner unprotected after TP1.
+                    _stopOrder = null;
                     _lastStopSent = double.NaN;
                     SubmitStop(d.StopMoved ? "tier:be" : "tier:resize");
                     DrawLevels();
@@ -1352,9 +2019,50 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _entryOrder = order;
             else if (sig == SigStop)
             {
-                _stopOrder = order;
+                // Adopt anything EXCEPT an order on its way out. The submit
+                // paths drop the reference on purpose before every
+                // cancel-replace, and re-adopting the dead order here would put
+                // it straight back — which both hands the hand-pull detector
+                // below a false match and, when the replacement's Working event
+                // happens to arrive first, leaves CancelBracketLegs holding a
+                // corpse while the real stop rests on after the trade is over.
+                //
+                // The WHOLE cancel path is a corpse, not just the terminal
+                // state: NT8 walks CancelPending -> CancelSubmitted ->
+                // Cancelled, and adopting either of the first two puts the dead
+                // order back in front of the detector. ChangePending/
+                // ChangeSubmitted are NOT on this list — those are a modify of
+                // the same live order, which is still ours.
+                if (orderState != OrderState.Cancelled
+                    && orderState != OrderState.CancelPending
+                    && orderState != OrderState.CancelSubmitted)
+                    _stopOrder = order;
                 if (orderState == OrderState.Working || orderState == OrderState.Accepted)
+                {
                     _stopChangePending = false;
+                    // A working stop is proof the position is covered, so any
+                    // pending cancel alarm was about an order we have replaced.
+                    _stopCancelAt = DateTime.MinValue;
+                }
+            }
+            else if (sig == SigAvgTp)
+            {
+                _avgTpOrder = order;
+                if (orderState == OrderState.Working || orderState == OrderState.Accepted)
+                    _avgTpChangePending = false;
+            }
+            else if (sig == SigFlatten)
+            {
+                // The retry watchdog asks this reference whether the flatten is
+                // still alive before it releases the guard, so it has to exist
+                // — FlattenAll kept none. Same cancel-path exclusion as the stop
+                // above: adopting a dying order would make a corpse read as a
+                // live exit and hold the watchdog shut forever, which is the
+                // failure mode this whole reference is here to prevent.
+                if (orderState != OrderState.Cancelled
+                    && orderState != OrderState.CancelPending
+                    && orderState != OrderState.CancelSubmitted)
+                    _flattenOrder = order;
             }
             else
             {
@@ -1367,7 +2075,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (orderState == OrderState.Rejected)
             {
                 Print("BreakBox: " + sig + " REJECTED (" + error + ": " + comment + ")");
-                if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3)
+                // A rejected ADD is survivable: fewer contracts is strictly
+                // SAFER under the envelope (monotone loss). Mark the level dead
+                // and keep trading — routing this through FlattenAll would turn
+                // a routine rejection into a realized loss.
+                int _rejLvl;
+                if (TryAddSigLevel(sig, out _rejLvl))
+                {
+                    if (_avgPlan != null && _rejLvl >= 0 && _rejLvl < _avgPlan.Levels)
+                        _avgPlan.Dead[_rejLvl] = true;
+                    Print("BreakBox AVG: add level " + (_rejLvl + 1) + " dead after rejection — position keeps its current size");
+                    return;
+                }
+                if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3 || sig == SigAvgTp)
                     FlattenAll("leg_rejected");
                 else if (sig == SigLong || sig == SigShort)
                 {
@@ -1388,17 +2108,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // A stop CANCELLED while we are still positioned, and not by us, is
-            // a human pulling it in Chart Trader. Respect it permanently.
-            if (sig == SigStop && orderState == OrderState.Cancelled && _inTrade && !_flattenPending)
+            // A stop CANCELLED while we are still positioned, and not by us,
+            // MIGHT be a human pulling it in Chart Trader. Only might: the
+            // matching REFERENCE is what separates the candidates. Every cancel
+            // this strategy causes — a resize, a breakeven move, NT8's own OCO
+            // shrink when a tier fills — is preceded by dropping the reference,
+            // so a Cancelled that still matches the order we believe is live is
+            // the one nobody here asked for. Matching on the signal NAME
+            // instead, which is what this did, could not tell the two apart,
+            // and adopted "by hand" on the platform's own housekeeping.
+            //
+            // Nothing is decided here. This only raises the alarm; the verdict
+            // is the deferred check in OnBarUpdate, which gives our machinery
+            // the grace window to re-cover the position first.
+            if (sig == SigStop && orderState == OrderState.Cancelled && _inTrade && !_flattenPending
+                && _stopOrder != null && order == _stopOrder)
             {
-                if (_stopCancelAt == DateTime.MinValue)
-                    _stopCancelAt = DateTime.Now;
-                else if ((DateTime.Now - _stopCancelAt).TotalSeconds > BracketCancelGraceSec)
-                {
-                    BbExits.AdoptManualStop(_bracket, _bracket.StopPx, true);
-                    Print("BreakBox: stop cancelled by hand — not resubmitting");
-                }
+                _stopCancelAt = DateTime.Now;
+                _stopOrder = null;                  // that order is gone either way
             }
         }
 
@@ -1556,12 +2283,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!ShowLevels || !_inTrade)
                 return;
             DrawTag(Draw.HorizontalLine(this, "BB_stop", _bracket.StopPx, Brushes.Red));
+
+            // Averaging trades draw no extra lines: _bracket.Tiers is 0 by
+            // construction while armed (see OpenAveragingBracket), so this
+            // loop is a no-op for them and only ever draws for tier trades.
             for (int i = 0; i < _bracket.Tiers; i++)
             {
                 if (_bracket.TierFilled[i])
                     continue;
                 DrawTag(Draw.HorizontalLine(this, "BB_tp" + (i + 1), _bracket.TargetPx[i], Brushes.LimeGreen));
             }
+
             DrawTag(Draw.HorizontalLine(this, "BB_entry", _bracket.EntryPx, Brushes.White));
         }
 
@@ -1807,7 +2539,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int EntryWindowEndHhmm { get; set; }
 
         [NinjaScriptProperty, Range(0, 2359)]
-        [Display(Name = "Flatten HHMM", Order = 3, GroupName = "06. Session")]
+        [Display(Name = "Flatten HHMM", Description = "Every open position is closed at this time. The window runs from here until the session open, so a position opened later in the block is closed too", Order = 3, GroupName = "06. Session")]
         public int FlattenHhmm { get; set; }
 
         [NinjaScriptProperty, Range(1, 100)]
@@ -1841,6 +2573,62 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Show panel", Order = 3, GroupName = "07. Visuals")]
         public bool ShowPanel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Averaging enabled (SIM-ONLY LAB)", Description = "Averaging-down laboratory. Refuses to arm on any non-Sim/Playback account. Module-ON is a DIFFERENT strategy from module-OFF and validates separately.", Order = 1, GroupName = "08. Averaging lab")]
+        public bool AveragingEnabled { get; set; }
+
+        [NinjaScriptProperty, Range(1, 32)]
+        [Display(Name = "Max adds (N)", Description = "User-defined depth; the budget still binds — a deep grid solves to a tighter spacing or refuses to arm", Order = 2, GroupName = "08. Averaging lab")]
+        public int AveragingMaxAdds { get; set; }
+
+        [NinjaScriptProperty, Range(1, 10)]
+        [Display(Name = "Add quantity (q)", Order = 3, GroupName = "08. Averaging lab")]
+        public int AveragingAddQty { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 1000000.0)]
+        [Display(Name = "Budget per trade ($, 0 = use fraction)", Description = "Direct dollar budget for one averaging trade. 0 derives it as fraction x daily loss limit. Either way it is capped by what is LEFT of today's daily loss limit — one trade may never out-risk the day.", Order = 4, GroupName = "08. Averaging lab")]
+        public double AveragingBudgetDollars { get; set; }
+
+        [NinjaScriptProperty, Range(0.05, 1.0)]
+        [Display(Name = "Budget fraction of daily loss", Description = "One trade's slice of DailyLossLimit; used only when Budget ($) = 0. Also capped by what is left of the day", Order = 5, GroupName = "08. Averaging lab")]
+        public double AveragingBudgetFraction { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 100000.0)]
+        [Display(Name = "Target profit G ($, net)", Description = "The trade still exits at this net dollar profit. Floor: G >= stack * (8 ticks * tickValue - commission)", Order = 6, GroupName = "08. Averaging lab")]
+        public double AveragingTargetProfitDollars { get; set; }
+
+        [NinjaScriptProperty, Range(1, 200)]
+        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 7, GroupName = "08. Averaging lab")]
+        public int AveragingStopBufferTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 8, GroupName = "08. Averaging lab")]
+        public AvgSpacingSource AveragingSpacingSource { get; set; }
+
+        [NinjaScriptProperty, Range(0.1, 10.0)]
+        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 9, GroupName = "08. Averaging lab")]
+        public double AveragingSpacingAtrMult { get; set; }
+
+        [NinjaScriptProperty, Range(1, 5)]
+        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 10, GroupName = "08. Averaging lab")]
+        public int AveragingConfirmBars { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 10.0)]
+        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 11, GroupName = "08. Averaging lab")]
+        public double AveragingVolAbortMult { get; set; }
+
+        [NinjaScriptProperty, Range(0, 120)]
+        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 12, GroupName = "08. Averaging lab")]
+        public int AveragingNoAddsFinalMinutes { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 100.0)]
+        [Display(Name = "Commission RT ($/contract)", Order = 13, GroupName = "08. Averaging lab")]
+        public double AveragingCommissionRt { get; set; }
+
+        [NinjaScriptProperty, Range(0, 40)]
+        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 14, GroupName = "08. Averaging lab")]
+        public int AveragingSlippageReserveTicks { get; set; }
 
         #endregion
     }

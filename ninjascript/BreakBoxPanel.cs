@@ -845,11 +845,27 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
-            int left = BbMath.HhmmToSecs(FlattenHhmm) - secs;
-            if (left < 0) left += 24 * 3600;
+            // Inside the latch there is nothing to count down TO — the strategy
+            // is closing everything on sight. The old form wrapped the negative
+            // remainder by a full day and read "flat in 23h58m" through exactly
+            // the window where it was flattening, which was survivable when that
+            // window was one minute wide and is a lie now that it runs for hours.
+            string flatTail;
+            if (BbMath.InWindow(secs, BbMath.HhmmToSecs(FlattenHhmm),
+                                      BbMath.HhmmToSecs(SessionOpenHhmm)))
+            {
+                flatTail = "FLATTENING";
+            }
+            else
+            {
+                int left = BbMath.HhmmToSecs(FlattenHhmm) - secs;
+                if (left < 0) left += 24 * 3600;
+                flatTail = string.Format(CultureInfo.InvariantCulture,
+                    "flat in {0}h{1:00}m", left / 3600, (left % 3600) / 60);
+            }
             s.SessionA = string.Format(CultureInfo.InvariantCulture,
-                "atr {0:0.00}   bar {1}s   flat in {2}h{3:00}m",
-                _atr.IsWarm ? _atr.Value : 0.0, BarSeconds(), left / 3600, (left % 3600) / 60);
+                "atr {0:0.00}   bar {1}s   {2}",
+                _atr.IsWarm ? _atr.Value : 0.0, BarSeconds(), flatTail);
             // The active stop source is NAMED, not merely lit on a button:
             // `MA` means "far ribbon edge" at MaPeriod = RibbonSlow and
             // something else entirely otherwise, and that is invisible in a
