@@ -1379,6 +1379,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ([[nt8-orders-from-marketdata-thread-crash]]).
         private void AvgOnBar(BbBar bar, int secs)
         {
+            if (_avgPlan == null || _avgRec == null)
+                return;
+
+            // Telemetry: the compact bar path (offline counterfactuals) and the
+            // prop-firm axis (worst open P&L, intrabar extremes).
+            if (_avgRec.Bars.Count < AvgTradeLog.MAX_BARS)
+                _avgRec.Bars.Add(new AvgBarRec { Ts = bar.Time, High = bar.High, Low = bar.Low, Close = bar.Close });
+            else
+                _avgRec.BarsCapped = true;
+            double worstPx = _dir > 0 ? bar.Low : bar.High;
+            double openPnl = (worstPx - _avgAvgPx) * _dir * _avgQty * Instrument.MasterInstrument.PointValue;
+            if (openPnl < _avgRec.MinUnrealized)
+                _avgRec.MinUnrealized = openPnl;
+
             // TP watchdog — same shape as the stop's (line ~681).
             if (_avgTpChangePending
                 && (DateTime.Now - _avgTpSentAt).TotalSeconds > ExitChangeWatchdogSec)
@@ -1528,6 +1542,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void CancelBracketLegs()
         {
             CancelIfLive(_stopOrder);
+            CancelIfLive(_avgTpOrder);
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
                 CancelIfLive(_tierOrders[i]);
         }
@@ -1577,6 +1592,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             rec.CfgHash = _cfgHash;
             AppendHistory(rec);
 
+            if (_avgArmed)
+            {
+                _avgRec.Pnl = pnl;
+                _avgRec.Outcome = _exitReason == SigAvgTp ? "tp"
+                                : _exitReason == SigStop ? "stop"
+                                : (_exitReason == "session_window" || _exitReason == SigFlatten) ? "session_flatten"
+                                : "other";
+                if (State == State.Realtime)        // the lab logs live sims only; backtests stay off the file
+                {
+                    try
+                    {
+                        System.IO.File.AppendAllText(_avgLogPath, AvgLog.Serialise(_avgRec) + Environment.NewLine);
+                    }
+                    catch (Exception ex)
+                    {
+                        Print("BreakBox AVG: lab log NOT written (" + ex.Message + ")");
+                    }
+                }
+                Print("BreakBox AVG: trade closed — " + _avgRec.Outcome + ", pnl "
+                      + pnl.ToString("C2") + ", min open " + _avgRec.MinUnrealized.ToString("C2")
+                      + ", fills " + _avgRec.Fills.Count);
+            }
+
             _inTrade = false;
             _flattenPending = false;
             _stopChangePending = false;
@@ -1594,6 +1632,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             _entryOrder = null;
             _stopOrder = null;
+            _avgTpOrder = null;
+            _avgArmed = false;
+            _avgPlan = null;
+            _avgRec = null;
+            _avgQty = 0;
+            _avgAvgPx = 0.0;
+            _avgTpChangePending = false;
+            _avgLastTpSent = double.NaN;
+            _avgTpLastQty = 0;
             for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
                 _tierOrders[i] = null;
 
@@ -1927,12 +1974,31 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!ShowLevels || !_inTrade)
                 return;
             DrawTag(Draw.HorizontalLine(this, "BB_stop", _bracket.StopPx, Brushes.Red));
-            for (int i = 0; i < _bracket.Tiers; i++)
+
+            if (_avgArmed && _avgPlan != null)
             {
-                if (_bracket.TierFilled[i])
-                    continue;
-                DrawTag(Draw.HorizontalLine(this, "BB_tp" + (i + 1), _bracket.TargetPx[i], Brushes.LimeGreen));
+                // The averaging grid: unfired levels goldenrod, fired gray,
+                // dead (aborted before touch) dark red — plus the single
+                // dynamic TP. No tiers to draw; _bracket.Tiers is 0 here.
+                for (int i = 0; i < _avgPlan.Levels; i++)
+                {
+                    Brush b = _avgPlan.Fired[i] ? Brushes.Gray
+                            : _avgPlan.Dead[i] ? Brushes.DarkRed : Brushes.Goldenrod;
+                    DrawTag(Draw.HorizontalLine(this, "BB_avgL" + i, _avgPlan.LevelPx[i], b));
+                }
+                if (!double.IsNaN(_avgLastTpSent))
+                    DrawTag(Draw.HorizontalLine(this, "BB_avgTp", _avgLastTpSent, Brushes.LimeGreen));
             }
+            else
+            {
+                for (int i = 0; i < _bracket.Tiers; i++)
+                {
+                    if (_bracket.TierFilled[i])
+                        continue;
+                    DrawTag(Draw.HorizontalLine(this, "BB_tp" + (i + 1), _bracket.TargetPx[i], Brushes.LimeGreen));
+                }
+            }
+
             DrawTag(Draw.HorizontalLine(this, "BB_entry", _bracket.EntryPx, Brushes.White));
         }
 
