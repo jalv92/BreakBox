@@ -296,10 +296,11 @@ namespace BreakBoxCore
 
             // The same TP expression OnFill uses, so the two can never disagree
             // about where the target is. Unrounded here: this is a span, not an
-            // order — the live TP order is rounded AWAY from the average, so this
-            // span is up to half a tick short of the one the order actually sits
-            // on, and the threshold trips correspondingly early. Accepted: half a
-            // tick of a ten-point span is noise next to bar granularity.
+            // order — the live TP order is rounded AWAY from the average (Ceil for
+            // a long, Floor for a short), not to nearest, so this span is up to a
+            // FULL tick short of the one the order actually sits on, and the
+            // threshold trips correspondingly early. Accepted: one tick of a
+            // ten-point span is noise next to bar granularity.
             double tp = avgPx + dir * (cfg.TargetDollars + cfg.CommissionRt * qty) * tick
                                     / (cfg.TickValue * qty);
             double span = (tp - avgPx) * dir;
