@@ -1624,7 +1624,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             // tier branch used to fall through to the close-out, so counting it
             // inside both would have double-booked the last tier.
             if (_inTrade && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp || IsTierSig(sig)))
+            {
                 BbExits.AddExitFill(_bracket, price, quantity);
+                if (_avgArmed && sig == SigAvgTp)
+                    _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;   // mirror of OnAddExecution: books stay truthful on the averaging exit
+            }
 
             // Entry fill. Gated on the signal NAME, not on a bool: by the time
             // this arrives, another submit may already have flipped the flag.
