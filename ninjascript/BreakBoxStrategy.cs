@@ -2184,28 +2184,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             DrawTag(Draw.HorizontalLine(this, "BB_stop", _bracket.StopPx, Brushes.Red));
 
-            if (_avgArmed && _avgPlan != null)
+            // Averaging trades draw no extra lines: _bracket.Tiers is 0 by
+            // construction while armed (see OpenAveragingBracket), so this
+            // loop is a no-op for them and only ever draws for tier trades.
+            for (int i = 0; i < _bracket.Tiers; i++)
             {
-                // The averaging grid: unfired levels goldenrod, fired gray,
-                // dead (aborted before touch) dark red — plus the single
-                // dynamic TP. No tiers to draw; _bracket.Tiers is 0 here.
-                for (int i = 0; i < _avgPlan.Levels; i++)
-                {
-                    Brush b = _avgPlan.Fired[i] ? Brushes.Gray
-                            : _avgPlan.Dead[i] ? Brushes.DarkRed : Brushes.Goldenrod;
-                    DrawTag(Draw.HorizontalLine(this, "BB_avgL" + i, _avgPlan.LevelPx[i], b));
-                }
-                if (!double.IsNaN(_avgLastTpSent))
-                    DrawTag(Draw.HorizontalLine(this, "BB_avgTp", _avgLastTpSent, Brushes.LimeGreen));
-            }
-            else
-            {
-                for (int i = 0; i < _bracket.Tiers; i++)
-                {
-                    if (_bracket.TierFilled[i])
-                        continue;
-                    DrawTag(Draw.HorizontalLine(this, "BB_tp" + (i + 1), _bracket.TargetPx[i], Brushes.LimeGreen));
-                }
+                if (_bracket.TierFilled[i])
+                    continue;
+                DrawTag(Draw.HorizontalLine(this, "BB_tp" + (i + 1), _bracket.TargetPx[i], Brushes.LimeGreen));
             }
 
             DrawTag(Draw.HorizontalLine(this, "BB_entry", _bracket.EntryPx, Brushes.White));
