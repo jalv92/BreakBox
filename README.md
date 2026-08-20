@@ -47,6 +47,11 @@ the solved geometry, every fill, the bar path, and the minimum open P&L. Inside 
 the competitor arm computable from the file alone. No promotion
 decision of any kind before the pre-registered sample (~680 trades, spec §8).
 
+**Where the per-trade budget lives.** Set `AveragingBudgetDollars` ($, in "08. Averaging
+lab") to fix it directly, or leave it at 0 to derive it as `AveragingBudgetFraction x
+DailyLossLimit` (DailyLossLimit lives in "06. Session"). Either way it is capped by what
+remains of today's daily loss limit — one trade can never out-risk the day.
+
 **Before you run it — the shipped defaults do not arm on NQ.** `BaseQuantity = 3` makes the
 stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming budget
 (`0.5 x DailyLossLimit` = $225) cannot host a 5-lot grid: every trade refuses with

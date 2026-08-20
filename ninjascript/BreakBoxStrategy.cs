@@ -369,6 +369,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AveragingEnabled = false;
                 AveragingMaxAdds = 2;
                 AveragingAddQty = 1;
+                AveragingBudgetDollars = 0;
                 AveragingBudgetFraction = 0.5;
                 AveragingTargetProfitDollars = 150;
                 AveragingStopBufferTicks = 8;
@@ -653,6 +654,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "avg=" + (AveragingEnabled ? "1" : "0"),
                 "avgmax=" + AveragingMaxAdds.ToString(CultureInfo.InvariantCulture),
                 "avgq=" + AveragingAddQty.ToString(CultureInfo.InvariantCulture),
+                "avgbuddol=" + AveragingBudgetDollars.ToString("0.##", CultureInfo.InvariantCulture),
                 "avgbud=" + AveragingBudgetFraction.ToString("0.###", CultureInfo.InvariantCulture),
                 "avgg=" + AveragingTargetProfitDollars.ToString("0.##", CultureInfo.InvariantCulture),
                 "avgsbuf=" + AveragingStopBufferTicks.ToString(CultureInfo.InvariantCulture),
@@ -1286,15 +1288,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // The trade's slice of what is LEFT of today's budget — a later
-            // trade in a losing day gets a smaller grid automatically.
+            // trade in a losing day gets a smaller grid automatically. A
+            // direct dollar budget (AveragingBudgetDollars > 0) overrides the
+            // fraction, but either way the day-left cap binds: one trade may
+            // never out-risk the day.
             double dayLossSoFar = _dayPnl < 0 ? -_dayPnl : 0.0;
-            double lArm = Math.Min(AveragingBudgetFraction * DailyLossLimit,
-                                   DailyLossLimit - dayLossSoFar);
+            double dayLeft = DailyLossLimit - dayLossSoFar;
+            double lArm = AveragingBudgetDollars > 0.0
+                ? Math.Min(AveragingBudgetDollars, dayLeft)
+                : Math.Min(AveragingBudgetFraction * DailyLossLimit, dayLeft);
             if (lArm <= 0.0)
             {
                 why = "no_day_budget_left";
                 return null;
             }
+            // Visibility: a direct budget silently capped by the day reads as a solver bug.
+            if (AveragingBudgetDollars > 0.0 && lArm < AveragingBudgetDollars)
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: budget {0:0.##} capped by remaining daily loss ({1:0.##} of {2:0.##} left) — raise Daily loss limit (06. Session) to use the full budget",
+                    AveragingBudgetDollars, dayLeft, DailyLossLimit));
 
             if (!_atr.IsWarm || _atr.Value <= 0.0)
             {
@@ -2488,44 +2500,48 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Add quantity (q)", Order = 3, GroupName = "08. Averaging lab")]
         public int AveragingAddQty { get; set; }
 
+        [NinjaScriptProperty, Range(0.0, 1000000.0)]
+        [Display(Name = "Budget per trade ($, 0 = use fraction)", Description = "Direct dollar budget for one averaging trade. 0 derives it as fraction x daily loss limit. Either way it is capped by what is LEFT of today's daily loss limit — one trade may never out-risk the day.", Order = 4, GroupName = "08. Averaging lab")]
+        public double AveragingBudgetDollars { get; set; }
+
         [NinjaScriptProperty, Range(0.05, 1.0)]
-        [Display(Name = "Budget fraction of daily loss", Description = "One trade's slice of DailyLossLimit; also capped by what is left of the day", Order = 4, GroupName = "08. Averaging lab")]
+        [Display(Name = "Budget fraction of daily loss", Description = "One trade's slice of DailyLossLimit; used only when Budget ($) = 0. Also capped by what is left of the day", Order = 5, GroupName = "08. Averaging lab")]
         public double AveragingBudgetFraction { get; set; }
 
         [NinjaScriptProperty, Range(1.0, 100000.0)]
-        [Display(Name = "Target profit G ($, net)", Description = "The trade still exits at this net dollar profit. Floor: G >= stack * (8 ticks * tickValue - commission)", Order = 5, GroupName = "08. Averaging lab")]
+        [Display(Name = "Target profit G ($, net)", Description = "The trade still exits at this net dollar profit. Floor: G >= stack * (8 ticks * tickValue - commission)", Order = 6, GroupName = "08. Averaging lab")]
         public double AveragingTargetProfitDollars { get; set; }
 
         [NinjaScriptProperty, Range(1, 200)]
-        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 6, GroupName = "08. Averaging lab")]
+        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 7, GroupName = "08. Averaging lab")]
         public int AveragingStopBufferTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 7, GroupName = "08. Averaging lab")]
+        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 8, GroupName = "08. Averaging lab")]
         public AvgSpacingSource AveragingSpacingSource { get; set; }
 
         [NinjaScriptProperty, Range(0.1, 10.0)]
-        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 8, GroupName = "08. Averaging lab")]
+        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 9, GroupName = "08. Averaging lab")]
         public double AveragingSpacingAtrMult { get; set; }
 
         [NinjaScriptProperty, Range(1, 5)]
-        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 9, GroupName = "08. Averaging lab")]
+        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 10, GroupName = "08. Averaging lab")]
         public int AveragingConfirmBars { get; set; }
 
         [NinjaScriptProperty, Range(1.0, 10.0)]
-        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 10, GroupName = "08. Averaging lab")]
+        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 11, GroupName = "08. Averaging lab")]
         public double AveragingVolAbortMult { get; set; }
 
         [NinjaScriptProperty, Range(0, 120)]
-        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 11, GroupName = "08. Averaging lab")]
+        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 12, GroupName = "08. Averaging lab")]
         public int AveragingNoAddsFinalMinutes { get; set; }
 
         [NinjaScriptProperty, Range(0.0, 100.0)]
-        [Display(Name = "Commission RT ($/contract)", Order = 12, GroupName = "08. Averaging lab")]
+        [Display(Name = "Commission RT ($/contract)", Order = 13, GroupName = "08. Averaging lab")]
         public double AveragingCommissionRt { get; set; }
 
         [NinjaScriptProperty, Range(0, 40)]
-        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 13, GroupName = "08. Averaging lab")]
+        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 14, GroupName = "08. Averaging lab")]
         public int AveragingSlippageReserveTicks { get; set; }
 
         #endregion
