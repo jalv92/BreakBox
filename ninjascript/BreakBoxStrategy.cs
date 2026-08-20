@@ -745,6 +745,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (d.StopMoved)
                     SubmitStop("bar:" + d.Why);
                 DrawLevels();
+
+                if (_avgArmed)
+                    AvgOnBar(bar, secs);
             }
 
             if (TimeToFlatten(secs))
@@ -1370,6 +1373,86 @@ namespace NinjaTrader.NinjaScript.Strategies
             else ExitShortLimit(0, true, qty, px, SigAvgTp, "");
         }
 
+        // The averaging bar loop: TP watchdog, one-way aborts, then the
+        // confirmation machine. Adds are MARKET orders fired here, on the main
+        // thread at bar close — never from OnMarketData
+        // ([[nt8-orders-from-marketdata-thread-crash]]).
+        private void AvgOnBar(BbBar bar, int secs)
+        {
+            // TP watchdog — same shape as the stop's (line ~681).
+            if (_avgTpChangePending
+                && (DateTime.Now - _avgTpSentAt).TotalSeconds > ExitChangeWatchdogSec)
+            {
+                Print("BreakBox AVG: TP modify unacknowledged after " + ExitChangeWatchdogSec
+                      + "s — resubmitting");
+                _avgTpChangePending = false;
+                double px = _avgLastTpSent;
+                _avgLastTpSent = double.NaN;
+                _avgTpLastQty = 0;
+                SubmitAvgTp(px, "watchdog");
+            }
+
+            // One-way aborts: volatility expansion, then the pre-close cutoff.
+            if (AvgEngine.VolAbort(_avgCfg, _avgPlan, _atr.Value))
+            {
+                _avgRec.AddsAborted = true;
+                _avgRec.AbortWhy = "vol_expansion";
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: vol abort — ATR {0:0.##} > {1:0.#}x entry ATR {2:0.##}; remaining adds dead, position and stop stay",
+                    _atr.Value, AveragingVolAbortMult, _avgPlan.EntryAtr));
+            }
+            if (!_avgPlan.AddsAborted
+                && secs >= BbMath.HhmmToSecs(FlattenHhmm) - AveragingNoAddsFinalMinutes * 60)
+            {
+                _avgPlan.AddsAborted = true;
+                _avgRec.AddsAborted = true;
+                _avgRec.AbortWhy = "close_cutoff";
+                Print("BreakBox AVG: inside the pre-close cutoff — no more adds this trade");
+            }
+
+            int n = AvgEngine.OnBarClosed(_avgCfg, _avgPlan, bar.High, bar.Low, bar.Close, _avgFireIdx);
+            for (int i = 0; i < n; i++)
+                SubmitAdd(_avgFireIdx[i]);
+        }
+
+        private void SubmitAdd(int level)
+        {
+            int q = AveragingAddQty;
+            string sig = level == 0 ? SigAdd1 : SigAdd2;
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG: level {0} confirmed @ {1} — adding {2} at market ({3})",
+                level + 1, _avgPlan.LevelPx[level], q, sig));
+            if (_dir > 0) EnterLong(0, q, sig);
+            else EnterShort(0, q, sig);
+        }
+
+        private void OnAddExecution(int level, double price, int qty, DateTime time)
+        {
+            _avgAvgPx = (_avgAvgPx * _avgQty + price * qty) / (_avgQty + qty);
+            _avgQty += qty;
+            _bracket.QtyTotal = _avgQty;
+            _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;
+
+            _avgRec.Fills.Add(new AvgFillRec
+            {
+                Ts = time, Level = level,
+                PlannedPx = _avgPlan.LevelPx[level], FillPx = price, Qty = qty
+            });
+
+            var u = AvgEngine.OnFill(_avgCfg, _avgPlan, _avgAvgPx, _avgQty);
+            _bracket.StopPx = u.StopPx;
+
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG: add{0} fill {1} @ {2} -> qty {3} avg {4} stop {5}{6} tp {7}",
+                level + 1, qty, price, _avgQty, _avgAvgPx, u.StopPx,
+                u.StopMoved ? " (budget ratchet)" : "", u.TpPx));
+
+            _lastStopSent = double.NaN;                 // defeat the dedupe, tier-resize idiom
+            SubmitStop("avg:add");
+            SubmitAvgTp(u.TpPx, "add");
+            DrawLevels();
+        }
+
         private void SubmitStop(string why)
         {
             if (!_inTrade || _bracket.StopCancelled)
@@ -1540,7 +1623,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // before any branch below decides what else to do about it — the
             // tier branch used to fall through to the close-out, so counting it
             // inside both would have double-booked the last tier.
-            if (_inTrade && (sig == SigStop || sig == SigFlatten || IsTierSig(sig)))
+            if (_inTrade && (sig == SigStop || sig == SigFlatten || sig == SigAvgTp || IsTierSig(sig)))
                 BbExits.AddExitFill(_bracket, price, quantity);
 
             // Entry fill. Gated on the signal NAME, not on a bool: by the time
@@ -1548,6 +1631,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             if ((sig == SigLong || sig == SigShort) && execution.Order.OrderState == OrderState.Filled)
             {
                 AdoptEntryFill(price, execution.Order.Filled, time);
+                return;
+            }
+
+            // An add executed. Accumulate OUR average/quantity (Position may be
+            // stale in-stack), recompute stop+TP from the REAL numbers, resize.
+            if (_avgArmed && _inTrade && (sig == SigAdd1 || sig == SigAdd2) && quantity > 0
+                && (execution.Order.OrderState == OrderState.Filled
+                    || execution.Order.OrderState == OrderState.PartFilled))
+            {
+                OnAddExecution(sig == SigAdd1 ? 0 : 1, price, quantity, time);
                 return;
             }
 
@@ -1612,6 +1705,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (orderState == OrderState.Working || orderState == OrderState.Accepted)
                     _stopChangePending = false;
             }
+            else if (sig == SigAvgTp)
+            {
+                _avgTpOrder = order;
+                if (orderState == OrderState.Working || orderState == OrderState.Accepted)
+                    _avgTpChangePending = false;
+            }
             else
             {
                 for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
@@ -1623,7 +1722,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (orderState == OrderState.Rejected)
             {
                 Print("BreakBox: " + sig + " REJECTED (" + error + ": " + comment + ")");
-                if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3)
+                // A rejected ADD is survivable: fewer contracts is strictly
+                // SAFER under the envelope (monotone loss). Mark the level dead
+                // and keep trading — routing this through FlattenAll would turn
+                // a routine rejection into a realized loss.
+                if (sig == SigAdd1 || sig == SigAdd2)
+                {
+                    int lvl = sig == SigAdd1 ? 0 : 1;
+                    if (_avgPlan != null)
+                        _avgPlan.Dead[lvl] = true;
+                    Print("BreakBox AVG: add level " + (lvl + 1) + " dead after rejection — position keeps its current size");
+                    return;
+                }
+                if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3 || sig == SigAvgTp)
                     FlattenAll("leg_rejected");
                 else if (sig == SigLong || sig == SigShort)
                 {
