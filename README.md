@@ -77,6 +77,10 @@ stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming b
 11. **A hand drag is not a hand pull.** Drag the stop in Chart Trader mid-trade: protection
     must survive, either adopted at the new price or re-covered by the strategy. A silent
     unprotected runner is a failure of this check even if nothing prints.
+12. **Partial averaging-TP fills re-cover the stop.** Run one armed trade with a large enough
+    stack that the whole-stack TP fills in pieces (a thin moment helps). Each partial must
+    print `avgtp:resize` and the Orders tab must show a working stop at the reduced quantity —
+    this branch has no automated coverage; this check is its only verification.
 
 ## Status and limits
 
