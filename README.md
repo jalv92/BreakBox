@@ -44,8 +44,11 @@ lab exists to MEASURE whether confirmation-gated adds beat that null. Its produc
 the solved geometry, every fill, the bar path, and the minimum open P&L. Inside `fills`,
 `level` is `-1` for the entry, `0`/`1` for an add, and `-2` for an exit execution; on a
 `-2` row `plannedPx` carries the live average basis at that moment, which is what makes
-the competitor arm computable from the file alone. No promotion
-decision of any kind before the pre-registered sample (~680 trades, spec §8).
+the competitor arm computable from the file alone. **Every line carries `cfgHash`, and lines with
+different values are different experiments — never pool them.** The three breakeven dials are inside
+that digest, so a BE-on run and a BE-off run append to the same file and are told apart only by it;
+`beApplied:false` on its own is ambiguous between "breakeven was off" and "breakeven was on and never
+triggered". No promotion decision of any kind before the pre-registered sample (~680 trades, spec §8).
 
 **Where the per-trade budget lives.** Set `AveragingBudgetDollars` ($, in "08. Averaging
 lab") to fix it directly, or leave it at 0 to derive it as `AveragingBudgetFraction x
@@ -64,7 +67,10 @@ and it never moves the stop backwards: if the budget ratchet already parked it t
 latches and does nothing. **Firing it disarms the rest of the grid** — every remaining add level sits
 below the new stop, and an add below the stop is a fill the envelope never priced, so those levels
 die. That is intended: the rescue worked, stop rescuing. The JSONL carries `beApplied`/`bePx`, which
-is what separates a BE'd trade from a real `tp`/`stop` in the outcome accounting (spec §8).
+is what separates a BE'd trade from a real `tp`/`stop` in the outcome accounting, plus `beTs` to
+locate the intervention inside that trade's bar path. Note that a BE'd exit fills through the stop
+order, so it logs as `outcome:"stop"` with a small POSITIVE `pnl` — spec §8 says how to read that,
+and why the two BE settings are separate arms split by `cfgHash` rather than by `beApplied`.
 
 **Before you run it — the shipped defaults do not arm on NQ.** `BaseQuantity = 3` makes the
 stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming budget
@@ -108,7 +114,9 @@ stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming b
 14. **Averaging breakeven fires and disarms the grid.** With the module armed, let price run half
     way from the average to the TP. The output must print `BreakBox AVG: BREAKEVEN`, naming the new
     stop, the average it came from, and how many add levels it just killed. The Orders tab must show
-    a WORKING stop at `average + 5 ticks` (not at the grid bottom), and the trade's line in
+    a WORKING stop at `average + 5 ticks` (rounded to the next tick away from the average, so off an
+    off-tick average the stop sits a fraction beyond that — correct, not a miscalculation), not at the
+    grid bottom, and the trade's line in
     `averaging_lab_log.jsonl` must carry `"beApplied":true` with a matching `bePx`. After it fires,
     a dip back through an add level must add nothing — that is the disarm, not a missed signal.
 

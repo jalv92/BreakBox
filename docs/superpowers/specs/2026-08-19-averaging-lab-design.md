@@ -61,6 +61,12 @@ TP     = A + (G + c·Q)/(Q·v)                        // in ticks above the live
 Any remaining add level at or below `S_live + 1 tick` is marked dead. This keeps `worst case ≤ L_arm`
 (commissions and the slippage reserve included) under any fill prices, partial fills, or rejections.
 
+**Amendment, 2026-08-20 (breakeven):** once the percent-of-TP breakeven fires, the live stop is the
+BE price and the ratchet above can no longer move it — BE is strictly tighter than `S_live` in the
+shipped geometry, and the ratchet is one-way, so nothing loosens it afterwards. The envelope only
+ever shrinks: the post-BE worst case is `≤` the pre-BE worst case, and the dead-level sweep runs
+against whichever stop is live, so the "no add below the stop" invariant holds on both paths.
+
 **Viability, for the record:** the trade wins iff price retraces to TP before S. Break-even
 `p* = (L_eff + costs)/(G + L_eff)` ≈ 91.5% at L=$1,000/G=$100 — and p* is also the *null* value of p.
 The lab exists to measure whether confirmation-gating pushes p above it. Expected: it does not.
@@ -74,7 +80,7 @@ The lab exists to measure whether confirmation-gating pushes p above it. Expecte
 | Add trigger | **confirmation-gated**: level touched, then a bar CLOSES back on the favorable side of it → market add, once per level | the only design with a route to p > p*: on a straight-line adverse move it never fires, so size correlates negatively with trend strength. Blind resting limits are the placebo, not the product |
 | Spacing `d` | `min(d_structural, d_max_from_L)`, frozen at arm | L is the hard ceiling; structure only informs. Structural source: box height for box-engine trades, `AtrMult × ATR` for cloud-engine trades (Auto) |
 | Stop | static planned bottom, raised only by the runtime recomputation | "stop where the current position loses L" gives a 200-tick stop at k=0 — rejected |
-| Breakeven | **User request, 2026-08-20:** percent-of-TP breakeven owned by this module alone (`BreakevenEnabled`/`BreakevenPct`/`BreakevenOffsetTicks`, default on/50%/5t). Once the bar extreme has covered `BreakevenPct` of the **average → TP** span, the whole-stack stop moves to `average + offset` in our favour. One-shot; one-way (never behind the budget ratchet); every level it overtakes dies | breakeven on an averaging stack has to mean the LIVE AVERAGE, because the average is the cost basis and the dynamic TP already hangs off it — from the entry, a dug grid's progress reads negative for most of its life. The existing tier breakeven (`BreakevenOnTp1`) is untouched and stays inert here (`Tiers == 0`, so `OnTierFill` never runs). Killing the overtaken levels is the §2 envelope invariant, not a preference: an add below the stop is a fill the envelope never priced. The consequence is intended — after BE the remaining grid is disarmed, because every add level sits below the BE stop |
+| Breakeven | **User request, 2026-08-20:** percent-of-TP breakeven owned by this module alone (`BreakevenEnabled`/`BreakevenPct`/`BreakevenOffsetTicks`, default on/50%/5t). Once the bar extreme has covered `BreakevenPct` of the **average → TP** span, the whole-stack stop moves to `average + offset` in our favour. One-shot; one-way (never behind the budget ratchet); every level it overtakes dies. **The ratchet-already-tighter case is theoretical under the shipped envelope** — the ratchet is bounded above by the average and BE parks at `average + offset`, so `beApplied == true && bePx == 0` should never appear in a log. If it does, treat it as an anomaly worth investigating (a geometry or ordering bug), NOT as a normal third category | breakeven on an averaging stack has to mean the LIVE AVERAGE, because the average is the cost basis and the dynamic TP already hangs off it — from the entry, a dug grid's progress reads negative for most of its life. The existing tier breakeven (`BreakevenOnTp1`) is untouched and stays inert here (`Tiers == 0`, so `OnTierFill` never runs). Killing the overtaken levels is the §2 envelope invariant, not a preference: an add below the stop is a fill the envelope never priced. The consequence is intended — after BE the remaining grid is disarmed, because every add level sits below the BE stop |
 | Vol abort | one-way: current ATR > `VolAbortMult ×` entry-ATR snapshot → kill remaining levels, keep position + stop | frozen spacing + vol expansion = max size in ninety seconds; adaptivity may only ever reduce exposure |
 | Daily budget | `L_arm = min(BudgetDollars > 0 ? BudgetDollars : BudgetFraction × DailyLossLimit, DailyLossLimit − day loss so far)`, via the host's existing `_dayPnl`/`CheckDailyLimits` machinery; **no replenishment from wins**; one armed trade at a time. **User override, 2026-08-20:** `AveragingBudgetDollars` (0 = off) sets the per-trade budget directly, bypassing the fraction; either way the day-left cap binds, so one trade may never out-risk the remaining day — a direct budget that gets capped prints once, naming the cap | the fraction split the budget across two parameter groups (DailyLossLimit lives in "06. Session") and was hard to find; a direct dollar dial puts the number where the user is already looking. A later trade in a losing day still gets a smaller grid automatically; host lockout semantics unchanged |
 | Session close | no arming within `NoAddsFinalMinutes`, no adds after that cutoff; the host's exit-on-close (30 s) flatten of a dug grid is a logged third outcome, not a bug | `IsExitOnSessionCloseStrategy = true` already (BreakBoxStrategy.cs:218-219) |
@@ -164,14 +170,32 @@ per-bar path `[t, h, l, c]` from entry to exit so ANY counterfactual (flat q wit
 
 ## 8. Validation protocol and kill criteria (pre-registered, before any Playback session)
 
-**The breakeven dial changes the experiment, and honestly:** a BE'd trade can no longer reach the
-module's own TP-or-stop dichotomy — it exits at the average plus a few ticks, which is neither the
-`G` the envelope was solved for nor the `L_eff` it was priced against. So outcome accounting gains a
-third shape, and the log's `beApplied` is the only thing that separates it from a real tp/stop.
-Split the corpus on that flag before computing `p`: mixing BE'd trades into the win column inflates
-`p` while shrinking the realized `G` that `p*` is computed from, which moves the kill threshold and
-the measurement in the same direction and would flatter the module twice over. With `AveragingBreakevenEnabled = false`
-the module measures the original null; the honest comparison is the two arms side by side, not one blended curve.
+**The breakeven dial splits the lab into two arms, and `p` survives in only one of them.**
+
+A BE'd trade never reaches the module's own TP-or-stop dichotomy: it exits at the average plus a few
+ticks, which is neither the `G` the envelope was solved for nor the `L_eff` it was priced against.
+Worse, it exits through the stop order (`SigStop`), so the log writes it as `outcome:"stop"` carrying
+a small POSITIVE `pnl` — roughly +$38 where a real stop is −$550. Read naively that is wrong twice:
+it counts AGAINST `p` (deflating it, not inflating it) while sitting in the `stop` bucket, where it
+contaminates any realized-`L_eff` estimate.
+
+**Conditioning on `beApplied` does not fix this, and must not be attempted.** `beApplied` is a
+post-treatment variable: reaching TP requires traversing the BE threshold first, so with BE on, the
+`beApplied == false` subset is approximately "trades that never got halfway", whose `p` is ≈0 by
+construction. Splitting on it manufactures the answer. Therefore:
+
+- **(a) The primary measurement `p = P(TP before S)` is defined ONLY on a corpus collected with
+  `AveragingBreakevenEnabled = false`,** at the full pre-registered `n`. With BE on, `p` is not
+  merely noisy — it is uncomputable, and the kill criterion below does not apply.
+- **(b) BE-on is a SECOND arm with its own `n`,** and its primary statistic is not `p`. It is the
+  paired comparison against the BE-off arm on net P&L and on minimum unrealized equity (the
+  prop-firm axis), computed over the logged bar paths. BE's claim is that it trades tail P&L for
+  drawdown; that trade is what gets measured, and it is measured against the other arm, not against `p*`.
+- **(c) The two arms are separated by `cfgHash`, never by `beApplied`.** Every lab line carries the
+  host's config digest, and the three BE dials are inside it, so two settings can never pool into one
+  curve. `beApplied` identifies BE'd trades as their OWN category within the BE-on arm — they enter
+  neither the `p` numerator/denominator nor the `G`/`L_eff` estimates — and `beTs` locates the
+  intervention inside that trade's bar path.
 
 - **Primary measurement:** empirical `p = P(TP before S)` per armed trade from the lab log, with a
   95% lower confidence bound, clustered by session. **Kill:** lower bound < p* computed from the

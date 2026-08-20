@@ -70,6 +70,7 @@ namespace BreakBoxCore
         public bool AddsAborted;              // one-way latch: vol abort, cutoff, or rejection policy
         public bool BeApplied;                // one-shot: the threshold was reached
         public double BePx;                   // the stop price BE set; 0 if it never moved one
+        public double BeProgressPct;          // how far the bar ACTUALLY got, not the dial
     }
 
     public struct AvgUpdate
@@ -294,7 +295,11 @@ namespace BreakBoxCore
             int dir = p.Dir;
 
             // The same TP expression OnFill uses, so the two can never disagree
-            // about where the target is. Unrounded here: this is a span, not an order.
+            // about where the target is. Unrounded here: this is a span, not an
+            // order — the live TP order is rounded AWAY from the average, so this
+            // span is up to half a tick short of the one the order actually sits
+            // on, and the threshold trips correspondingly early. Accepted: half a
+            // tick of a ten-point span is noise next to bar granularity.
             double tp = avgPx + dir * (cfg.TargetDollars + cfg.CommissionRt * qty) * tick
                                     / (cfg.TickValue * qty);
             double span = (tp - avgPx) * dir;
@@ -309,21 +314,29 @@ namespace BreakBoxCore
             be = dir > 0 ? CeilToTick(be, tick) : FloorToTick(be, tick);
 
             p.BeApplied = true;             // the threshold was reached either way
+            p.BeProgressPct = progress / span * 100.0;
 
             // Never backwards: the budget ratchet may already be tighter.
-            if ((be - p.StopPx) * dir <= 0.0)
-                return false;
-
-            p.StopPx = be;
-            p.BePx = be;
+            bool moved = (be - p.StopPx) * dir > 0.0;
+            if (moved)
+            {
+                p.StopPx = be;
+                p.BePx = be;
+            }
 
             // An add below the stop is a fill the envelope never priced, so every
-            // level the stop just overtook is dead. In practice this disarms the
-            // remaining grid, which is the point: the rescue worked.
+            // level the LIVE stop has overtaken is dead — whichever of the two
+            // stops that turned out to be. Unconditional, exactly like OnFill's
+            // identical sweep: the guarantee is a property of the stop, not of
+            // who moved it last. In practice this disarms the remaining grid,
+            // which is the point: the rescue worked.
             for (int i = 0; i < p.Levels; i++)
                 if (!p.Fired[i] && !p.Dead[i]
                     && (p.LevelPx[i] - (p.StopPx + dir * tick)) * dir <= 0.0)
                     p.Dead[i] = true;
+
+            if (!moved)
+                return false;
 
             newStopPx = be;
             return true;
@@ -363,8 +376,10 @@ namespace BreakBoxCore
         public readonly List<AvgBarRec> Bars = new List<AvgBarRec>();
         public bool AddsAborted;
         public string AbortWhy = "";
+        public string CfgHash = "";           // WHICH EXPERIMENT this line belongs to — never pool across values
         public bool BeApplied;                // percent-of-TP breakeven reached its threshold
         public double BePx;                   // where BE parked the stop; 0 if it never moved one
+        public DateTime BeTs;                 // the bar BE latched on, so it is locatable in `bars`
         public string Outcome = "";           // tp | stop | session_flatten | other
         public double Pnl;                    // currency, same basis as the trade journal
         public double MinUnrealized;          // most negative open P&L seen, bar lows/highs
@@ -396,8 +411,10 @@ namespace BreakBoxCore
              .Append(",\"spacingSource\":").Append(S(r.SpacingSource))
              .Append(",\"addsAborted\":").Append(r.AddsAborted ? "true" : "false")
              .Append(",\"abortWhy\":").Append(S(r.AbortWhy))
+             .Append(",\"cfgHash\":").Append(S(r.CfgHash))
              .Append(",\"beApplied\":").Append(r.BeApplied ? "true" : "false")
              .Append(",\"bePx\":").Append(N(r.BePx))
+             .Append(",\"beTs\":").Append(S(Ts(r.BeTs)))
              .Append(",\"outcome\":").Append(S(r.Outcome))
              .Append(",\"pnl\":").Append(N(r.Pnl))
              .Append(",\"minUnrealized\":").Append(N(r.MinUnrealized))

@@ -299,6 +299,9 @@ public static class AveragingTests
         T.CheckClose(be, 20001.25, "stop parked 5 ticks above the average", 1e-9);
         T.Check(p.BeApplied, "latch set");
         T.CheckClose(p.BePx, 20001.25, "BePx records where BE parked it", 1e-9);
+        // 5.15 / 10.288 = 50.058...%, the MEASURED overshoot past the 50% dial
+        T.CheckClose(p.BeProgressPct, 5.15 / 10.288 * 100.0, "progress is measured, not the dial", 1e-9);
+        T.Check(p.BeProgressPct > 50.0, "and it is past the threshold, not equal to it");
         T.CheckClose(p.StopPx, 20001.25, "the plan's live stop is the BE price", 1e-9);
     }
 
@@ -341,6 +344,10 @@ public static class AveragingTests
         T.Check(p.BeApplied, "it still latches — the threshold WAS reached");
         T.CheckClose(p.StopPx, 20002.00, "stop untouched", 1e-9);
         T.CheckClose(p.BePx, 0.0, "BePx stays 0: BE never set a stop", 1e-12);
+        // The sweep is unconditional (OnFill's rule): the guarantee belongs to the
+        // live stop, not to whoever moved it last. Levels 19994.00/19988.00 are
+        // under the ratchet's 20002.00 just as surely as under a BE price.
+        T.Check(p.Dead[0] && p.Dead[1], "levels under the LIVE stop die on this branch too");
     }
 
     private static void BreakevenKillsTheLevelsBelowTheNewStop()
@@ -383,6 +390,7 @@ public static class AveragingTests
         r.Bars.Add(new AvgBarRec { Ts = r.EntryTs, High = 20001.0, Low = 19999.5, Close = 20000.5 });
         r.Outcome = "tp"; r.Pnl = 200.0; r.MinUnrealized = -180.5;
         r.BeApplied = true; r.BePx = 20001.50;
+        r.BeTs = r.EntryTs.AddMinutes(7); r.CfgHash = "a1b2c3d4";
 
         string line = AvgLog.Serialise(r);
         T.Check(!line.Contains("\n"), "one line");
@@ -393,6 +401,9 @@ public static class AveragingTests
         T.Check(line.Contains("\"dTicks\":12") && line.Contains("\"lEff\":521.2"), "solved geometry serialised");
         T.Check(line.Contains("\"beApplied\":true") && line.Contains("\"bePx\":20001.5"),
                 "breakeven is on the line — it is what separates a BE'd trade from a tp/stop one");
+        T.Check(line.Contains("\"beTs\":\"2026-08-19T18:12:30\""), "BE is locatable in the bar path");
+        T.Check(line.Contains("\"cfgHash\":\"a1b2c3d4\""),
+                "every line names its experiment — BE-on and BE-off must never pool");
     }
 
     // 2026-08-20 amendment: the host's N<=2 clamp is gone (the user sets the

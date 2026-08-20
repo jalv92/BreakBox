@@ -1451,6 +1451,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _avgRec.G = AveragingTargetProfitDollars;
             _avgRec.StopPx = plan.StopPx;
             _avgRec.SpacingSource = spacing;
+            _avgRec.CfgHash = _cfgHash;         // BE-on and BE-off are different experiments
             _avgRec.Fills.Add(new AvgFillRec { Ts = _entryTime, Level = -1, PlannedPx = fillPx, FillPx = fillPx, Qty = qty });
 
             why = "";
@@ -1603,13 +1604,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 _bracket.StopPx = bePx;
                 Print(string.Format(CultureInfo.InvariantCulture,
-                    "BreakBox AVG: BREAKEVEN — {0:0.#}% of the way to TP reached; stop to {1} (average {2} + {3}t, in our favour). {4} remaining add level(s) killed — every level sits under the stop now, so the grid is disarmed for the rest of this trade",
-                    AveragingBreakevenPct, bePx, _avgAvgPx, AveragingBreakevenOffsetTicks,
-                    aliveBefore - aliveAfter));
+                    "BreakBox AVG: BREAKEVEN — bar reached {0:0.#}% of the way to TP (threshold {1:0.#}%); stop to {2} (average {3} + {4}t, rounded to the next tick away from the average, in our favour). {5} remaining add level(s) killed — every level sits under the stop now, so the grid is disarmed for the rest of this trade",
+                    _avgPlan.BeProgressPct, AveragingBreakevenPct, bePx, _avgAvgPx,
+                    AveragingBreakevenOffsetTicks, aliveBefore - aliveAfter));
                 _lastStopSent = double.NaN;             // defeat the dedupe, tier-resize idiom
                 SubmitStop("avg:be");
                 DrawLevels();
             }
+            if (_avgPlan.BeApplied && _avgRec.BeTs == DateTime.MinValue)
+                _avgRec.BeTs = bar.Time;        // the transition bar, findable in `bars`
             _avgRec.BeApplied = _avgPlan.BeApplied;
             _avgRec.BePx = _avgPlan.BePx;
 
@@ -2646,7 +2649,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double AveragingBreakevenPct { get; set; }
 
         [NinjaScriptProperty, Range(0, 500)]
-        [Display(Name = "Breakeven offset (ticks)", Description = "The breakeven stop parks this far BEYOND the LIVE AVERAGE, in our favour, so it locks a small profit rather than scratching. 0 parks it exactly on the average.", Order = 9, GroupName = "08. Averaging lab")]
+        [Display(Name = "Breakeven offset (ticks)", Description = "The breakeven stop parks this far BEYOND the LIVE AVERAGE, in our favour, so it locks a small profit rather than scratching, then is rounded to the next tick away from the average — off an off-tick average the working stop is a fraction beyond average + offset, which is correct, not a miscalculation. 0 parks it on the average (still tick-rounded).", Order = 9, GroupName = "08. Averaging lab")]
         public int AveragingBreakevenOffsetTicks { get; set; }
 
         [NinjaScriptProperty, Range(1, 200)]
