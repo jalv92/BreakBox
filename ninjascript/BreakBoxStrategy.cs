@@ -1186,14 +1186,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private AvgPlan TryArmAveraging(double fillPx, int qty, out string why)
         {
             // SIM-ONLY guard (spec §4): live accounts never arm, no override.
-            if (State == State.Realtime && Account != null
-                && !Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
-                && !Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase))
+            // Fails CLOSED on an unverifiable (null) Account — never treat
+            // "can't tell" as "safe to arm".
+            if (State == State.Realtime
+                && (Account == null
+                    || (!Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
+                        && !Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase))))
             {
                 if (!_avgSimBlockPrinted)
                 {
                     _avgSimBlockPrinted = true;
-                    Print("BreakBox AVG: account '" + Account.Name
+                    Print("BreakBox AVG: account '" + (Account != null ? Account.Name : "unknown account")
                           + "' is not Sim/Playback — averaging lab is SIM-ONLY and stays OFF");
                 }
                 why = "live_account";
