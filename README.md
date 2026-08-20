@@ -52,6 +52,20 @@ lab") to fix it directly, or leave it at 0 to derive it as `AveragingBudgetFract
 DailyLossLimit` (DailyLossLimit lives in "06. Session"). Either way it is capped by what
 remains of today's daily loss limit — one trade can never out-risk the day.
 
+**Breakeven, and what it means here.** `AveragingBreakevenEnabled` (on by default) is the module's
+own breakeven and has nothing to do with `BreakevenOnTp1` in "05. Targets", which stays inert on
+averaging trades. Once the bar extreme has covered `AveragingBreakevenPct` (default 50) of the
+distance from the position to its take-profit, the whole-stack stop moves to
+`average + AveragingBreakevenOffsetTicks` (default 5) in our favour. **Breakeven means the LIVE
+AVERAGE, not the entry price** — on an averaging stack the average is the cost basis and the dynamic
+TP already hangs off it, so both ends of the measurement are anchored on the same number; measured
+from the entry, a dug grid's progress would read negative for most of its life. It fires once,
+and it never moves the stop backwards: if the budget ratchet already parked it tighter, breakeven
+latches and does nothing. **Firing it disarms the rest of the grid** — every remaining add level sits
+below the new stop, and an add below the stop is a fill the envelope never priced, so those levels
+die. That is intended: the rescue worked, stop rescuing. The JSONL carries `beApplied`/`bePx`, which
+is what separates a BE'd trade from a real `tp`/`stop` in the outcome accounting (spec §8).
+
 **Before you run it — the shipped defaults do not arm on NQ.** `BaseQuantity = 3` makes the
 stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming budget
 (`0.5 x DailyLossLimit` = $225) cannot host a 5-lot grid: every trade refuses with
@@ -91,6 +105,12 @@ stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming b
     must close and the output must print the `session_window` exit. The flatten is a latch, not
     a one-minute window: it keeps firing until the session open, so a thin tape with no bar
     closing inside that minute can no longer skip it.
+14. **Averaging breakeven fires and disarms the grid.** With the module armed, let price run half
+    way from the average to the TP. The output must print `BreakBox AVG: BREAKEVEN`, naming the new
+    stop, the average it came from, and how many add levels it just killed. The Orders tab must show
+    a WORKING stop at `average + 5 ticks` (not at the grid bottom), and the trade's line in
+    `averaging_lab_log.jsonl` must carry `"beApplied":true` with a matching `bePx`. After it fires,
+    a dip back through an add level must add nothing — that is the disarm, not a missed signal.
 
 ## Status and limits
 

@@ -21,6 +21,14 @@ public static class AveragingTests
         DipAndReclaimFiresOnce();
         VolAbortIsOneWay();
 
+        T.Section("Averaging: percent-of-TP breakeven");
+        BreakevenFiresAtHalfTheAverageToTpSpan();
+        BreakevenIsOneShot();
+        BreakevenMirrorsOnAShort();
+        BreakevenNeverMovesTheStopBackwards();
+        BreakevenKillsTheLevelsBelowTheNewStop();
+        BreakevenRespectsItsSwitch();
+
         T.Section("Averaging: telemetry");
         SerialiseIsOneInvariantJsonLine();
 
@@ -247,6 +255,121 @@ public static class AveragingTests
         T.CheckInt(AvgEngine.OnBarClosed(c, p, lvl + 0.25, lvl - 0.25, lvl + 0.25, idx), 0, "aborted plan fires nothing");
     }
 
+    // The BE fixture is the ArmedNq grid: NQ, q0=1, N=2, budget $600, G=$200,
+    // solved d=24t s=12t -> stop 19985.00, levels 19994.00 and 19988.00.
+    // The BE span, by hand and unrounded:
+    //   TP = avg + (G + c*Q) * tick / (v*Q) = 20000 + (200 + 5.76)*0.25/5 = 20010.288
+    //   span = 10.288 price;  50% of it = 5.144;  BE = 20000 + 5*0.25 = 20001.25
+    private static AvgPlan BeNq(out AvgConfig c, int dir)
+    {
+        c = NqCfg();
+        c.MaxAdds = 2;
+        c.StopBufferTicks = 8;
+        c.BudgetDollars = 600.0;
+        c.TargetDollars = 200.0;
+        c.BreakevenEnabled = true;
+        c.BreakevenPct = 50.0;
+        c.BreakevenOffsetTicks = 5;
+        var p = AvgEngine.Arm(c, dir, 20000.00, 1, 1000.0, 12.0);
+        T.Check(p.Armed, "BE fixture arms (dir " + dir + ")");
+        return p;
+    }
+
+    private static void BreakevenFiresAtHalfTheAverageToTpSpan()
+    {
+        var fresh = new AvgConfig();
+        T.Check(fresh.BreakevenEnabled, "shipped default: BE on");
+        T.CheckClose(fresh.BreakevenPct, 50.0, "shipped default: 50% of the span", 1e-12);
+        T.CheckInt(fresh.BreakevenOffsetTicks, 5, "shipped default: 5-tick offset");
+
+        AvgConfig c;
+        var p = BeNq(out c, 1);
+        double be;
+
+        // 5.00 of the 10.288 span is 48.6% — under the threshold, and the latch
+        // must NOT arm on a near miss or a later bar could never fire it.
+        T.Check(!AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20005.00, out be),
+                "20005.00 is 48.6% of the way: no BE");
+        T.Check(!p.BeApplied, "a near miss does not latch");
+        T.CheckClose(be, 0.0, "no stop handed back", 1e-12);
+
+        // 5.15 clears 5.144.
+        T.Check(AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20005.15, out be),
+                "20005.15 clears the 50% threshold");
+        T.CheckClose(be, 20001.25, "stop parked 5 ticks above the average", 1e-9);
+        T.Check(p.BeApplied, "latch set");
+        T.CheckClose(p.BePx, 20001.25, "BePx records where BE parked it", 1e-9);
+        T.CheckClose(p.StopPx, 20001.25, "the plan's live stop is the BE price", 1e-9);
+    }
+
+    private static void BreakevenIsOneShot()
+    {
+        AvgConfig c;
+        var p = BeNq(out c, 1);
+        double be;
+        T.Check(AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20005.15, out be), "first call fires");
+        T.Check(!AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20009.00, out be),
+                "a further advance does not fire it twice");
+        T.CheckClose(p.StopPx, 20001.25, "and the stop stays where BE put it", 1e-9);
+    }
+
+    // Mirror: the span is measured with dir, so a short's 50% sits at
+    // 20000 - 5.144 = 19994.856, and BE parks 5 ticks BELOW the average.
+    private static void BreakevenMirrorsOnAShort()
+    {
+        AvgConfig c;
+        var p = BeNq(out c, -1);
+        double be;
+        T.Check(!AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 19995.00, out be),
+                "short: 19995.00 is short of the threshold");
+        T.Check(AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 19994.85, out be),
+                "short: 19994.85 clears it");
+        T.CheckClose(be, 19998.75, "short: stop parked 5 ticks below the average", 1e-9);
+        T.CheckClose(p.BePx, 19998.75, "short: BePx recorded", 1e-9);
+    }
+
+    // The budget ratchet can already be tighter than breakeven (a badly filled
+    // stack pushes the stop up toward price). BE must latch and do nothing.
+    private static void BreakevenNeverMovesTheStopBackwards()
+    {
+        AvgConfig c;
+        var p = BeNq(out c, 1);
+        p.StopPx = 20002.00;                       // tighter than BE's 20001.25
+        double be;
+        T.Check(!AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20005.15, out be),
+                "threshold reached but the stop is already tighter: no move");
+        T.Check(p.BeApplied, "it still latches — the threshold WAS reached");
+        T.CheckClose(p.StopPx, 20002.00, "stop untouched", 1e-9);
+        T.CheckClose(p.BePx, 0.0, "BePx stays 0: BE never set a stop", 1e-12);
+    }
+
+    private static void BreakevenKillsTheLevelsBelowTheNewStop()
+    {
+        AvgConfig c;
+        var p = BeNq(out c, 1);
+        T.Check(!p.Dead[0] && !p.Dead[1], "both levels alive before BE");
+        double be;
+        T.Check(AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20005.15, out be), "BE fires");
+        // levels sit at 19994.00 and 19988.00, both under the 20001.25 stop
+        T.Check(p.Dead[0] && p.Dead[1], "every level under the new stop is dead");
+        var idx = new int[AvgConfig.MAX_LEVELS];
+        double lvl = p.LevelPx[0];
+        T.CheckInt(AvgEngine.OnBarClosed(c, p, lvl + 8 * 0.25, lvl - 2 * 0.25, lvl + 4 * 0.25, idx), 0,
+                   "the grid is disarmed: a textbook reclaim adds nothing");
+    }
+
+    private static void BreakevenRespectsItsSwitch()
+    {
+        AvgConfig c;
+        var p = BeNq(out c, 1);
+        c.BreakevenEnabled = false;
+        double be;
+        T.Check(!AvgEngine.BreakevenCheck(c, p, 20000.00, 1, 20050.00, out be),
+                "switched off: never fires, however far price runs");
+        T.Check(!p.BeApplied, "switched off: no latch");
+        T.Check(!p.Dead[0], "switched off: the grid stays armed");
+    }
+
     private static void SerialiseIsOneInvariantJsonLine()
     {
         var r = new AvgTradeLog();
@@ -259,6 +382,7 @@ public static class AveragingTests
         r.Fills.Add(new AvgFillRec { Ts = r.EntryTs.AddMinutes(3), Level = 0, PlannedPx = 19997.25, FillPx = 19998.00, Qty = 1 });
         r.Bars.Add(new AvgBarRec { Ts = r.EntryTs, High = 20001.0, Low = 19999.5, Close = 20000.5 });
         r.Outcome = "tp"; r.Pnl = 200.0; r.MinUnrealized = -180.5;
+        r.BeApplied = true; r.BePx = 20001.50;
 
         string line = AvgLog.Serialise(r);
         T.Check(!line.Contains("\n"), "one line");
@@ -267,6 +391,8 @@ public static class AveragingTests
         T.Check(line.Contains("\"fills\":[") && line.Contains("\"level\":-1"), "entry fill rides as level -1");
         T.Check(line.Contains("\"bars\":[[\"2026-08-19T18:05:30\",20001,19999.5,20000.5]]"), "bar path is a compact array");
         T.Check(line.Contains("\"dTicks\":12") && line.Contains("\"lEff\":521.2"), "solved geometry serialised");
+        T.Check(line.Contains("\"beApplied\":true") && line.Contains("\"bePx\":20001.5"),
+                "breakeven is on the line — it is what separates a BE'd trade from a tp/stop one");
     }
 
     // 2026-08-20 amendment: the host's N<=2 clamp is gone (the user sets the

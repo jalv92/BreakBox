@@ -384,6 +384,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AveragingBudgetDollars = 0;
                 AveragingBudgetFraction = 0.5;
                 AveragingTargetProfitDollars = 150;
+                AveragingBreakevenEnabled = true;
+                AveragingBreakevenPct = 50;
+                AveragingBreakevenOffsetTicks = 5;
                 AveragingStopBufferTicks = 8;
                 AveragingSpacingSource = AvgSpacingSource.Auto;
                 AveragingSpacingAtrMult = 1.0;
@@ -691,6 +694,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "avgbuddol=" + AveragingBudgetDollars.ToString("0.##", CultureInfo.InvariantCulture),
                 "avgbud=" + AveragingBudgetFraction.ToString("0.###", CultureInfo.InvariantCulture),
                 "avgg=" + AveragingTargetProfitDollars.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgbe=" + (AveragingBreakevenEnabled ? "1" : "0"),
+                "avgbepct=" + AveragingBreakevenPct.ToString("0.##", CultureInfo.InvariantCulture),
+                "avgbeoff=" + AveragingBreakevenOffsetTicks.ToString(CultureInfo.InvariantCulture),
                 "avgsbuf=" + AveragingStopBufferTicks.ToString(CultureInfo.InvariantCulture),
                 "avgspace=" + AveragingSpacingSource,
                 "avgatr=" + AveragingSpacingAtrMult.ToString("0.###", CultureInfo.InvariantCulture),
@@ -1420,6 +1426,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             _avgCfg.SlippageReserveTicks = AveragingSlippageReserveTicks;
             _avgCfg.ConfirmBars = AveragingConfirmBars;
             _avgCfg.VolAbortMult = AveragingVolAbortMult;
+            _avgCfg.BreakevenEnabled = AveragingBreakevenEnabled;
+            _avgCfg.BreakevenPct = AveragingBreakevenPct;
+            _avgCfg.BreakevenOffsetTicks = AveragingBreakevenOffsetTicks;
 
             AvgPlan plan = AvgEngine.Arm(_avgCfg, _dir, fillPx, qty, dStructTicks, _atr.Value);
             if (!plan.Armed)
@@ -1573,6 +1582,36 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _avgRec.AbortWhy = "close_cutoff";
                 Print("BreakBox AVG: inside the pre-close cutoff — no more adds this trade");
             }
+
+            // Percent-of-TP breakeven, BEFORE the confirmation loop on purpose:
+            // on a bar that both clears the threshold and touches a level, the
+            // protective move wins and the level it just killed never fires.
+            int aliveBefore = 0;
+            if (!_avgPlan.BeApplied)
+                for (int i = 0; i < _avgPlan.Levels; i++)
+                    if (!_avgPlan.Fired[i] && !_avgPlan.Dead[i])
+                        aliveBefore++;
+
+            double bePx;
+            if (AvgEngine.BreakevenCheck(_avgCfg, _avgPlan, _avgAvgPx, _avgQty,
+                                         _dir > 0 ? bar.High : bar.Low, out bePx))
+            {
+                int aliveAfter = 0;
+                for (int i = 0; i < _avgPlan.Levels; i++)
+                    if (!_avgPlan.Fired[i] && !_avgPlan.Dead[i])
+                        aliveAfter++;
+
+                _bracket.StopPx = bePx;
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: BREAKEVEN — {0:0.#}% of the way to TP reached; stop to {1} (average {2} + {3}t, in our favour). {4} remaining add level(s) killed — every level sits under the stop now, so the grid is disarmed for the rest of this trade",
+                    AveragingBreakevenPct, bePx, _avgAvgPx, AveragingBreakevenOffsetTicks,
+                    aliveBefore - aliveAfter));
+                _lastStopSent = double.NaN;             // defeat the dedupe, tier-resize idiom
+                SubmitStop("avg:be");
+                DrawLevels();
+            }
+            _avgRec.BeApplied = _avgPlan.BeApplied;
+            _avgRec.BePx = _avgPlan.BePx;
 
             int n = AvgEngine.OnBarClosed(_avgCfg, _avgPlan, bar.High, bar.Low, bar.Close, _avgFireIdx);
             for (int i = 0; i < n; i++)
@@ -2598,36 +2637,48 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Target profit G ($, net)", Description = "The trade still exits at this net dollar profit. Floor: G >= stack * (8 ticks * tickValue - commission)", Order = 6, GroupName = "08. Averaging lab")]
         public double AveragingTargetProfitDollars { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Breakeven enabled", Description = "This module's own breakeven, independent of 'Breakeven on TP1' in 05. Targets (which stays inert on averaging trades). Once price has covered the share below of the distance from the LIVE AVERAGE to the take-profit, the whole-stack stop moves to the average plus an offset in our favour. One-shot, and it never moves the stop away from price. Firing it kills every remaining add level, so the grid is disarmed for the rest of the trade — the rescue worked, stop rescuing.", Order = 7, GroupName = "08. Averaging lab")]
+        public bool AveragingBreakevenEnabled { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 99.0)]
+        [Display(Name = "Breakeven at (% of TP)", Description = "Percent of the average -> take-profit distance, measured on the bar extreme (high for a long, low for a short) at bar close. Both ends are anchored on the live average, so a dug grid measures its progress from its own cost basis and not from the entry.", Order = 8, GroupName = "08. Averaging lab")]
+        public double AveragingBreakevenPct { get; set; }
+
+        [NinjaScriptProperty, Range(0, 500)]
+        [Display(Name = "Breakeven offset (ticks)", Description = "The breakeven stop parks this far BEYOND the LIVE AVERAGE, in our favour, so it locks a small profit rather than scratching. 0 parks it exactly on the average.", Order = 9, GroupName = "08. Averaging lab")]
+        public int AveragingBreakevenOffsetTicks { get; set; }
+
         [NinjaScriptProperty, Range(1, 200)]
-        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 7, GroupName = "08. Averaging lab")]
+        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 10, GroupName = "08. Averaging lab")]
         public int AveragingStopBufferTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 8, GroupName = "08. Averaging lab")]
+        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 11, GroupName = "08. Averaging lab")]
         public AvgSpacingSource AveragingSpacingSource { get; set; }
 
         [NinjaScriptProperty, Range(0.1, 10.0)]
-        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 9, GroupName = "08. Averaging lab")]
+        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 12, GroupName = "08. Averaging lab")]
         public double AveragingSpacingAtrMult { get; set; }
 
         [NinjaScriptProperty, Range(1, 5)]
-        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 10, GroupName = "08. Averaging lab")]
+        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 13, GroupName = "08. Averaging lab")]
         public int AveragingConfirmBars { get; set; }
 
         [NinjaScriptProperty, Range(1.0, 10.0)]
-        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 11, GroupName = "08. Averaging lab")]
+        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 14, GroupName = "08. Averaging lab")]
         public double AveragingVolAbortMult { get; set; }
 
         [NinjaScriptProperty, Range(0, 120)]
-        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 12, GroupName = "08. Averaging lab")]
+        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 15, GroupName = "08. Averaging lab")]
         public int AveragingNoAddsFinalMinutes { get; set; }
 
         [NinjaScriptProperty, Range(0.0, 100.0)]
-        [Display(Name = "Commission RT ($/contract)", Order = 13, GroupName = "08. Averaging lab")]
+        [Display(Name = "Commission RT ($/contract)", Order = 16, GroupName = "08. Averaging lab")]
         public double AveragingCommissionRt { get; set; }
 
         [NinjaScriptProperty, Range(0, 40)]
-        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 14, GroupName = "08. Averaging lab")]
+        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 17, GroupName = "08. Averaging lab")]
         public int AveragingSlippageReserveTicks { get; set; }
 
         #endregion

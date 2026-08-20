@@ -74,6 +74,7 @@ The lab exists to measure whether confirmation-gating pushes p above it. Expecte
 | Add trigger | **confirmation-gated**: level touched, then a bar CLOSES back on the favorable side of it → market add, once per level | the only design with a route to p > p*: on a straight-line adverse move it never fires, so size correlates negatively with trend strength. Blind resting limits are the placebo, not the product |
 | Spacing `d` | `min(d_structural, d_max_from_L)`, frozen at arm | L is the hard ceiling; structure only informs. Structural source: box height for box-engine trades, `AtrMult × ATR` for cloud-engine trades (Auto) |
 | Stop | static planned bottom, raised only by the runtime recomputation | "stop where the current position loses L" gives a 200-tick stop at k=0 — rejected |
+| Breakeven | **User request, 2026-08-20:** percent-of-TP breakeven owned by this module alone (`BreakevenEnabled`/`BreakevenPct`/`BreakevenOffsetTicks`, default on/50%/5t). Once the bar extreme has covered `BreakevenPct` of the **average → TP** span, the whole-stack stop moves to `average + offset` in our favour. One-shot; one-way (never behind the budget ratchet); every level it overtakes dies | breakeven on an averaging stack has to mean the LIVE AVERAGE, because the average is the cost basis and the dynamic TP already hangs off it — from the entry, a dug grid's progress reads negative for most of its life. The existing tier breakeven (`BreakevenOnTp1`) is untouched and stays inert here (`Tiers == 0`, so `OnTierFill` never runs). Killing the overtaken levels is the §2 envelope invariant, not a preference: an add below the stop is a fill the envelope never priced. The consequence is intended — after BE the remaining grid is disarmed, because every add level sits below the BE stop |
 | Vol abort | one-way: current ATR > `VolAbortMult ×` entry-ATR snapshot → kill remaining levels, keep position + stop | frozen spacing + vol expansion = max size in ninety seconds; adaptivity may only ever reduce exposure |
 | Daily budget | `L_arm = min(BudgetDollars > 0 ? BudgetDollars : BudgetFraction × DailyLossLimit, DailyLossLimit − day loss so far)`, via the host's existing `_dayPnl`/`CheckDailyLimits` machinery; **no replenishment from wins**; one armed trade at a time. **User override, 2026-08-20:** `AveragingBudgetDollars` (0 = off) sets the per-trade budget directly, bypassing the fraction; either way the day-left cap binds, so one trade may never out-risk the remaining day — a direct budget that gets capped prints once, naming the cap | the fraction split the budget across two parameter groups (DailyLossLimit lives in "06. Session") and was hard to find; a direct dollar dial puts the number where the user is already looking. A later trade in a losing day still gets a smaller grid automatically; host lockout semantics unchanged |
 | Session close | no arming within `NoAddsFinalMinutes`, no adds after that cutoff; the host's exit-on-close (30 s) flatten of a dug grid is a logged third outcome, not a bug | `IsExitOnSessionCloseStrategy = true` already (BreakBoxStrategy.cs:218-219) |
@@ -149,6 +150,9 @@ per-bar path `[t, h, l, c]` from entry to exit so ANY counterfactual (flat q wit
 | `AveragingBudgetDollars` | double 0..1,000,000, default 0 | direct $ budget for one averaging trade; 0 = derive from `AveragingBudgetFraction` instead. Either way capped by what is LEFT of today's daily loss limit — one trade may never out-risk the day |
 | `AveragingBudgetFraction` | 0..1, default 0.5 | share of DailyLossLimit one trade may risk, used only when `AveragingBudgetDollars` = 0 |
 | `AveragingTargetProfitDollars` | double, default 150 | G — explicit, never inferred from Tp1R. Default is 150, not 100, because the §2 TP-floor constraint needs G ≥ Q_N·(8v − c) = $102.72 on NQ at q=1, N=2 — a $100 default would refuse to arm out of the box |
+| `AveragingBreakevenEnabled` | bool, **true** | the module's own breakeven; independent of `BreakevenOnTp1`, which stays inert on averaging trades |
+| `AveragingBreakevenPct` | double 1..99, default **50** | percent of the **average → TP** distance, measured on the bar extreme (high long / low short) at bar close |
+| `AveragingBreakevenOffsetTicks` | int 0..500, default **5** | the BE stop parks this far BEYOND the live average, in our favour — it locks a small profit rather than scratching. Firing BE kills every remaining add level |
 | `AveragingStopBufferTicks` | int, default 8 | s (raised to d/2 at arm if below) |
 | `AveragingSpacingSource` | enum Auto \| BoxHeight \| AtrMult, default Auto | d_structural source |
 | `AveragingSpacingAtrMult` | double, default 1.0 | when ATR-based |
@@ -159,6 +163,15 @@ per-bar path `[t, h, l, c]` from entry to exit so ANY counterfactual (flat q wit
 | `AveragingSlippageReserveTicks` | int, default 2 | reserve subtracted from the budget |
 
 ## 8. Validation protocol and kill criteria (pre-registered, before any Playback session)
+
+**The breakeven dial changes the experiment, and honestly:** a BE'd trade can no longer reach the
+module's own TP-or-stop dichotomy — it exits at the average plus a few ticks, which is neither the
+`G` the envelope was solved for nor the `L_eff` it was priced against. So outcome accounting gains a
+third shape, and the log's `beApplied` is the only thing that separates it from a real tp/stop.
+Split the corpus on that flag before computing `p`: mixing BE'd trades into the win column inflates
+`p` while shrinking the realized `G` that `p*` is computed from, which moves the kill threshold and
+the measurement in the same direction and would flatter the module twice over. With `AveragingBreakevenEnabled = false`
+the module measures the original null; the honest comparison is the two arms side by side, not one blended curve.
 
 - **Primary measurement:** empirical `p = P(TP before S)` per armed trade from the lab log, with a
   95% lower confidence bound, clustered by session. **Kill:** lower bound < p* computed from the
