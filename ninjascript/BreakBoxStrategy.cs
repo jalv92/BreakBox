@@ -76,6 +76,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SigTp3 = "BB_TP3";
         private const string SigFlatten = "BB_Flatten";
 
+        // Averaging lab (SIM-ONLY). Distinct names so OnOrderUpdate can fork:
+        // a rejected add is survivable, a rejected protective order is not.
+        private const string SigAdd1 = "BB_Add1";
+        private const string SigAdd2 = "BB_Add2";
+        private const string SigAvgTp = "BB_AvgTp";
+
         private static readonly string[] TierSig = { SigTp1, SigTp2, SigTp3 };
 
         // Order-layer mechanics, NOT dials. None of these has a counterpart on
@@ -201,6 +207,25 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int _tagSeq;
         private int _lastDrawnBoxId = -1;
 
+        // Averaging lab state. _avgQty/_avgAvgPx are OUR fill-accumulated
+        // position: inside an execution event NT8 has not necessarily updated
+        // Position yet ([[nt8-order-event-race]]), so the recompute reads these,
+        // never Position directly.
+        private AvgConfig _avgCfg;
+        private AvgPlan _avgPlan;
+        private bool _avgArmed;
+        private int _avgQty;
+        private double _avgAvgPx;
+        private Order _avgTpOrder;
+        private volatile bool _avgTpChangePending;
+        private DateTime _avgTpSentAt = DateTime.MinValue;
+        private double _avgLastTpSent = double.NaN;
+        private int _avgTpLastQty;
+        private AvgTradeLog _avgRec;
+        private string _avgLogPath = "";
+        private bool _avgSimBlockPrinted;
+        private readonly int[] _avgFireIdx = new int[AvgConfig.MAX_LEVELS];
+
         #endregion
 
         #region Lifecycle
@@ -313,12 +338,36 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ShowBox = true;
                 ShowLevels = true;
                 ShowPanel = true;
+
+                // ---- Averaging lab (SIM-ONLY). Defaults per the 2026-08-19 spec.
+                // G defaults to 150, not 100: the TP floor needs G >= QN*(8*v - c),
+                // which is $102.72 on NQ at q0=1, N=2 — a $100 default would
+                // refuse to arm out of the box.
+                AveragingEnabled = false;
+                AveragingMaxAdds = 2;
+                AveragingAddQty = 1;
+                AveragingBudgetFraction = 0.5;
+                AveragingTargetProfitDollars = 150;
+                AveragingStopBufferTicks = 8;
+                AveragingSpacingSource = AvgSpacingSource.Auto;
+                AveragingSpacingAtrMult = 1.0;
+                AveragingConfirmBars = 1;
+                AveragingVolAbortMult = 2.0;
+                AveragingNoAddsFinalMinutes = 15;
+                AveragingCommissionRt = 5.76;
+                AveragingSlippageReserveTicks = 2;
             }
             else if (State == State.Configure)
             {
                 _bracket = new BbBracket();
                 _engState = new BbEngineState();
                 _cloudState = new BbCloudState();
+
+                // Under EntryHandling.AllEntries NT8 SILENTLY ignores any Enter*
+                // beyond this budget — without this line every add is discarded
+                // and the module looks armed while doing nothing. Set here, not
+                // in SetDefaults: property values are settled by Configure.
+                EntriesPerDirection = AveragingEnabled ? AveragingMaxAdds + 1 : 1;
             }
             else if (State == State.DataLoaded)
             {
@@ -358,6 +407,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _emaTrend = new Ema(_cloudCfg.TrendLine);
                 _swings = new SwingDetector(SwingStrength);
                 OpenHistory();
+
+                _avgLogPath = System.IO.Path.Combine(
+                    System.IO.Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "BreakBox"),
+                    "averaging_lab_log.jsonl");
 
                 // v2's scaling contract expresses every horizon in seconds and
                 // converts it through BbScale.Bars(_barSec) — a 30s chart is an
@@ -1101,6 +1154,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Prices and submits the whole bracket. Called once, from the entry fill.
         private void OpenBracket(double fillPx, int qty)
         {
+            if (AveragingEnabled)
+            {
+                string why;
+                AvgPlan plan = TryArmAveraging(fillPx, qty, out why);
+                if (plan != null)
+                {
+                    OpenAveragingBracket(fillPx, qty, plan);
+                    return;
+                }
+                // A refusal is never silent and never blocks the trade.
+                Print("BreakBox AVG: not armed — " + why + " — trade runs the normal bracket");
+            }
+
             var inp = StopInputs(_pendingAction);
             BbExits.OnEntryFill(_exitCfg, _bracket, _dir, fillPx, qty, _atr.Value, _atr.IsWarm, inp);
 
@@ -1113,6 +1179,192 @@ namespace NinjaTrader.NinjaScript.Strategies
             for (int i = 0; i < _bracket.Tiers; i++)
                 SubmitTier(i);
             DrawLevels();
+        }
+
+        // Every reason NOT to average, checked in cheap-to-expensive order.
+        // Returns null with `why` set, or an armed plan.
+        private AvgPlan TryArmAveraging(double fillPx, int qty, out string why)
+        {
+            // SIM-ONLY guard (spec §4): live accounts never arm, no override.
+            if (State == State.Realtime && Account != null
+                && !Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
+                && !Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_avgSimBlockPrinted)
+                {
+                    _avgSimBlockPrinted = true;
+                    Print("BreakBox AVG: account '" + Account.Name
+                          + "' is not Sim/Playback — averaging lab is SIM-ONLY and stays OFF");
+                }
+                why = "live_account";
+                return null;
+            }
+
+            // No arming inside the pre-close cutoff: a dug grid meeting the
+            // session flatten is a certain -L on the whole stack.
+            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
+            if (secs >= BbMath.HhmmToSecs(FlattenHhmm) - AveragingNoAddsFinalMinutes * 60)
+            {
+                why = "inside_close_cutoff";
+                return null;
+            }
+
+            // The trade's slice of what is LEFT of today's budget — a later
+            // trade in a losing day gets a smaller grid automatically.
+            double dayLossSoFar = _dayPnl < 0 ? -_dayPnl : 0.0;
+            double lArm = Math.Min(AveragingBudgetFraction * DailyLossLimit,
+                                   DailyLossLimit - dayLossSoFar);
+            if (lArm <= 0.0)
+            {
+                why = "no_day_budget_left";
+                return null;
+            }
+
+            if (!_atr.IsWarm || _atr.Value <= 0.0)
+            {
+                why = "atr_cold";
+                return null;
+            }
+
+            // Structural spacing candidate (Arm takes the min with the budget d,
+            // so structure only ever compresses the grid).
+            var box = _engState != null ? _engState.Box : null;
+            bool boxUsable = box != null && box.High > box.Low;
+            bool useBox;
+            switch (AveragingSpacingSource)
+            {
+                case AvgSpacingSource.BoxHeight:
+                    if (!boxUsable)
+                    {
+                        why = "no_box_for_spacing";
+                        return null;
+                    }
+                    useBox = true;
+                    break;
+                case AvgSpacingSource.AtrMult:
+                    useBox = false;
+                    break;
+                default: // Auto
+                    useBox = _owningEngine == BbEntryEngine.Break && boxUsable;
+                    break;
+            }
+            double dStructTicks = useBox
+                ? (box.High - box.Low) / TickSize
+                : AveragingSpacingAtrMult * _atr.Value / TickSize;
+            string spacing = useBox ? "box" : "atr";
+
+            _avgCfg = new AvgConfig();
+            _avgCfg.TickSize = TickSize;
+            _avgCfg.TickValue = Instrument.MasterInstrument.PointValue * TickSize;
+            _avgCfg.MaxAdds = AveragingMaxAdds;
+            _avgCfg.AddQty = AveragingAddQty;
+            _avgCfg.BudgetDollars = lArm;
+            _avgCfg.TargetDollars = AveragingTargetProfitDollars;
+            _avgCfg.StopBufferTicks = AveragingStopBufferTicks;
+            _avgCfg.CommissionRt = AveragingCommissionRt;
+            _avgCfg.SlippageReserveTicks = AveragingSlippageReserveTicks;
+            _avgCfg.ConfirmBars = AveragingConfirmBars;
+            _avgCfg.VolAbortMult = AveragingVolAbortMult;
+
+            AvgPlan plan = AvgEngine.Arm(_avgCfg, _dir, fillPx, qty, dStructTicks, _atr.Value);
+            if (!plan.Armed)
+            {
+                why = plan.RefusedWhy;
+                return null;
+            }
+
+            _avgRec = new AvgTradeLog();
+            _avgRec.EntryTs = _entryTime;
+            _avgRec.Dir = _dir;
+            _avgRec.Engine = _owningEngine.ToString();
+            _avgRec.EntryPx = fillPx;
+            _avgRec.EntryQty = qty;
+            _avgRec.DTicks = plan.DTicks;
+            _avgRec.STicks = plan.STicks;
+            _avgRec.Levels = plan.Levels;
+            _avgRec.LArm = lArm;
+            _avgRec.LEff = plan.LEff;
+            _avgRec.G = AveragingTargetProfitDollars;
+            _avgRec.StopPx = plan.StopPx;
+            _avgRec.SpacingSource = spacing;
+            _avgRec.Fills.Add(new AvgFillRec { Ts = _entryTime, Level = -1, PlannedPx = fillPx, FillPx = fillPx, Qty = qty });
+
+            why = "";
+            return plan;
+        }
+
+        // The averaging bracket: ONE stop for the whole stack (SubmitStop, with
+        // fromEntrySignal "" while armed) and ONE dynamic TP. The 3-tier bracket
+        // is never armed for this trade — _bracket.Tiers stays 0, which keeps
+        // SubmitTier, OnTierFill and the breakeven/trail paths inert by
+        // construction, while WentFlat/journal/panel read the same fields they
+        // always read.
+        private void OpenAveragingBracket(double fillPx, int qty, AvgPlan plan)
+        {
+            _avgArmed = true;
+            _avgPlan = plan;
+            _avgQty = qty;
+            _avgAvgPx = fillPx;
+            _avgSimBlockPrinted = false;
+
+            _bracket.Dir = _dir;
+            _bracket.EntryPx = fillPx;
+            _bracket.AtrRef = _atr.IsWarm ? _atr.Value : 0.0;
+            _bracket.Mfe = fillPx;
+            _bracket.QtyTotal = qty;
+            _bracket.QtyOpen = qty;
+            _bracket.BeApplied = true;          // no tiers -> inert, but explicit
+            _bracket.TrailArmed = false;
+            _bracket.RealizedPts = 0.0;
+            _bracket.QtyClosed = 0;
+            _bracket.StopCancelled = false;
+            _bracket.BarsInTrade = 0;
+            _bracket.Tiers = 0;
+            for (int i = 0; i < BbExitConfig.MAX_TIERS; i++)
+            {
+                _bracket.TargetPx[i] = 0.0;
+                _bracket.TierFilled[i] = false;
+            }
+            _bracket.StopPx = plan.StopPx;
+            _bracket.InitialStopPx = plan.StopPx;
+            _bracket.R = Math.Abs(fillPx - plan.StopPx);
+            _bracket.StopWhy = "avg_grid";
+
+            var u = AvgEngine.OnFill(_avgCfg, plan, fillPx, qty);
+            _bracket.StopPx = u.StopPx;
+
+            Print(string.Format(CultureInfo.InvariantCulture,
+                "BreakBox AVG armed {0} q0={1} d={2}t s={3}t levels={4} LArm={5:0.##} LEff={6:0.##} stop {7} tp {8} ({9})",
+                _dir > 0 ? "LONG" : "SHORT", qty, plan.DTicks, plan.STicks, plan.Levels,
+                _avgRec.LArm, plan.LEff, _bracket.StopPx, u.TpPx, _avgRec.SpacingSource));
+
+            SubmitStop("avg:init");
+            SubmitAvgTp(u.TpPx, "init");
+            DrawLevels();
+        }
+
+        // The whole-stack dynamic TP. Cancel-replace by reference: the ref is
+        // nulled BEFORE the resubmit so our own in-stack Cancelled echo can never
+        // be misread ([[latigobreak-project]] commit 575c524 pattern).
+        private void SubmitAvgTp(double px, string why)
+        {
+            if (!_inTrade || !_avgArmed)
+                return;
+            int qty = _bracket.QtyOpen;
+            if (qty < 1)
+                return;
+            if (!double.IsNaN(_avgLastTpSent) && Math.Abs(px - _avgLastTpSent) < TickSize / 2.0
+                && qty == _avgTpLastQty)
+                return;
+
+            _avgTpOrder = null;
+            _avgTpChangePending = true;
+            _avgTpSentAt = DateTime.Now;
+            _avgLastTpSent = px;
+            _avgTpLastQty = qty;
+
+            if (_dir > 0) ExitLongLimit(0, true, qty, px, SigAvgTp, "");
+            else ExitShortLimit(0, true, qty, px, SigAvgTp, "");
         }
 
         private void SubmitStop(string why)
@@ -1144,8 +1396,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             _stopChangeSentAt = DateTime.Now;
             _lastStopSent = px;
 
-            if (_dir > 0) ExitLongStopMarket(0, true, qty, px, SigStop, _entrySig);
-            else ExitShortStopMarket(0, true, qty, px, SigStop, _entrySig);
+            string fromSig = _avgArmed ? "" : _entrySig;
+            if (_dir > 0) ExitLongStopMarket(0, true, qty, px, SigStop, fromSig);
+            else ExitShortStopMarket(0, true, qty, px, SigStop, fromSig);
         }
 
         private void SubmitTier(int i)
@@ -1841,6 +2094,58 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Show panel", Order = 3, GroupName = "07. Visuals")]
         public bool ShowPanel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Averaging enabled (SIM-ONLY LAB)", Description = "Averaging-down laboratory. Refuses to arm on any non-Sim/Playback account. Module-ON is a DIFFERENT strategy from module-OFF and validates separately.", Order = 1, GroupName = "08. Averaging lab")]
+        public bool AveragingEnabled { get; set; }
+
+        [NinjaScriptProperty, Range(1, 2)]
+        [Display(Name = "Max adds (N)", Description = "Hard-clamped to 2: all of the benefit is at the first add; depth only levers the tail", Order = 2, GroupName = "08. Averaging lab")]
+        public int AveragingMaxAdds { get; set; }
+
+        [NinjaScriptProperty, Range(1, 10)]
+        [Display(Name = "Add quantity (q)", Order = 3, GroupName = "08. Averaging lab")]
+        public int AveragingAddQty { get; set; }
+
+        [NinjaScriptProperty, Range(0.05, 1.0)]
+        [Display(Name = "Budget fraction of daily loss", Description = "One trade's slice of DailyLossLimit; also capped by what is left of the day", Order = 4, GroupName = "08. Averaging lab")]
+        public double AveragingBudgetFraction { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 100000.0)]
+        [Display(Name = "Target profit G ($, net)", Description = "The trade still exits at this net dollar profit. Floor: G >= stack * (8 ticks * tickValue - commission)", Order = 5, GroupName = "08. Averaging lab")]
+        public double AveragingTargetProfitDollars { get; set; }
+
+        [NinjaScriptProperty, Range(1, 200)]
+        [Display(Name = "Stop buffer s (ticks)", Description = "Below the deepest level; raised to d/2 at arm if smaller", Order = 6, GroupName = "08. Averaging lab")]
+        public int AveragingStopBufferTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Spacing source", Description = "Auto = box height when the box engine owns the trade, ATR otherwise; the budget-solved d caps it either way", Order = 7, GroupName = "08. Averaging lab")]
+        public AvgSpacingSource AveragingSpacingSource { get; set; }
+
+        [NinjaScriptProperty, Range(0.1, 10.0)]
+        [Display(Name = "Spacing ATR mult", Description = "Structural spacing when the source resolves to ATR", Order = 8, GroupName = "08. Averaging lab")]
+        public double AveragingSpacingAtrMult { get; set; }
+
+        [NinjaScriptProperty, Range(1, 5)]
+        [Display(Name = "Confirm bars", Description = "Bar closes back beyond a touched level before adding — straight-line moves never confirm", Order = 9, GroupName = "08. Averaging lab")]
+        public int AveragingConfirmBars { get; set; }
+
+        [NinjaScriptProperty, Range(1.0, 10.0)]
+        [Display(Name = "Vol abort mult", Description = "One-way: ATR above this multiple of the entry ATR kills the remaining adds", Order = 10, GroupName = "08. Averaging lab")]
+        public double AveragingVolAbortMult { get; set; }
+
+        [NinjaScriptProperty, Range(0, 120)]
+        [Display(Name = "No adds final minutes", Description = "No arming or adding this close to FlattenHhmm", Order = 11, GroupName = "08. Averaging lab")]
+        public int AveragingNoAddsFinalMinutes { get; set; }
+
+        [NinjaScriptProperty, Range(0.0, 100.0)]
+        [Display(Name = "Commission RT ($/contract)", Order = 12, GroupName = "08. Averaging lab")]
+        public double AveragingCommissionRt { get; set; }
+
+        [NinjaScriptProperty, Range(0, 40)]
+        [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 13, GroupName = "08. Averaging lab")]
+        public int AveragingSlippageReserveTicks { get; set; }
 
         #endregion
     }
