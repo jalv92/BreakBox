@@ -20,6 +20,9 @@ public static class AveragingTests
         StraightLineNeverConfirms();
         DipAndReclaimFiresOnce();
         VolAbortIsOneWay();
+
+        T.Section("Averaging: telemetry");
+        SerialiseIsOneInvariantJsonLine();
     }
 
     private static AvgConfig NqCfg()
@@ -239,5 +242,27 @@ public static class AveragingTests
         var idx = new int[AvgConfig.MAX_LEVELS];
         double lvl = p.LevelPx[0];
         T.CheckInt(AvgEngine.OnBarClosed(c, p, lvl + 0.25, lvl - 0.25, lvl + 0.25, idx), 0, "aborted plan fires nothing");
+    }
+
+    private static void SerialiseIsOneInvariantJsonLine()
+    {
+        var r = new AvgTradeLog();
+        r.EntryTs = new DateTime(2026, 8, 19, 18, 5, 30);
+        r.Dir = 1; r.Engine = "Cloud"; r.EntryPx = 20000.25; r.EntryQty = 1;
+        r.DTicks = 12; r.STicks = 8; r.Levels = 2;
+        r.LArm = 600.0; r.LEff = 521.2; r.G = 200.0; r.StopPx = 19992.00;
+        r.SpacingSource = "atr";
+        r.Fills.Add(new AvgFillRec { Ts = r.EntryTs, Level = -1, PlannedPx = 20000.25, FillPx = 20000.25, Qty = 1 });
+        r.Fills.Add(new AvgFillRec { Ts = r.EntryTs.AddMinutes(3), Level = 0, PlannedPx = 19997.25, FillPx = 19998.00, Qty = 1 });
+        r.Bars.Add(new AvgBarRec { Ts = r.EntryTs, High = 20001.0, Low = 19999.5, Close = 20000.5 });
+        r.Outcome = "tp"; r.Pnl = 200.0; r.MinUnrealized = -180.5;
+
+        string line = AvgLog.Serialise(r);
+        T.Check(!line.Contains("\n"), "one line");
+        T.Check(line.Contains("\"outcome\":\"tp\""), "outcome serialised");
+        T.Check(line.Contains("\"minUnrealized\":-180.5"), "invariant-culture numbers (no comma decimals)");
+        T.Check(line.Contains("\"fills\":[") && line.Contains("\"level\":-1"), "entry fill rides as level -1");
+        T.Check(line.Contains("\"bars\":[[\"2026-08-19T18:05:30\",20001,19999.5,20000.5]]"), "bar path is a compact array");
+        T.Check(line.Contains("\"dTicks\":12") && line.Contains("\"lEff\":521.2"), "solved geometry serialised");
     }
 }

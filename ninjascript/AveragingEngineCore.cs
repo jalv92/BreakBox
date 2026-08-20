@@ -266,4 +266,98 @@ namespace BreakBoxCore
             return true;
         }
     }
+
+    public struct AvgFillRec
+    {
+        public DateTime Ts;
+        public int Level;                     // -1 = the entry fill
+        public double PlannedPx, FillPx;
+        public int Qty;
+    }
+
+    public struct AvgBarRec
+    {
+        public DateTime Ts;
+        public double High, Low, Close;
+    }
+
+    // One armed trade, everything the offline analysis needs: the solved
+    // geometry, every fill, the outcome, the prop-firm axis (min unrealized),
+    // and the compact bar path that makes ANY counterfactual — including
+    // "flat q0 with the host's own 3-tier bracket" — computable offline
+    // without re-running Playback.
+    public sealed class AvgTradeLog
+    {
+        public DateTime EntryTs;
+        public int Dir;
+        public string Engine = "";
+        public double EntryPx;
+        public int EntryQty;
+        public int DTicks, STicks, Levels;
+        public double LArm, LEff, G, StopPx;
+        public string SpacingSource = "";
+        public readonly List<AvgFillRec> Fills = new List<AvgFillRec>();
+        public readonly List<AvgBarRec> Bars = new List<AvgBarRec>();
+        public bool AddsAborted;
+        public string AbortWhy = "";
+        public string Outcome = "";           // tp | stop | session_flatten | other
+        public double Pnl;                    // currency, same basis as the trade journal
+        public double MinUnrealized;          // most negative open P&L seen, bar lows/highs
+        public bool BarsCapped;
+        public const int MAX_BARS = 2000;
+    }
+
+    public static class AvgLog
+    {
+        private static string N(double v) { return v.ToString("R", CultureInfo.InvariantCulture); }
+        private static string Ts(DateTime t) { return t.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture); }
+        private static string S(string s) { return "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+
+        public static string Serialise(AvgTradeLog r)
+        {
+            var b = new StringBuilder(4096);
+            b.Append("{\"entryTs\":").Append(S(Ts(r.EntryTs)))
+             .Append(",\"dir\":").Append(r.Dir)
+             .Append(",\"engine\":").Append(S(r.Engine))
+             .Append(",\"entryPx\":").Append(N(r.EntryPx))
+             .Append(",\"entryQty\":").Append(r.EntryQty)
+             .Append(",\"dTicks\":").Append(r.DTicks)
+             .Append(",\"sTicks\":").Append(r.STicks)
+             .Append(",\"levels\":").Append(r.Levels)
+             .Append(",\"lArm\":").Append(N(r.LArm))
+             .Append(",\"lEff\":").Append(N(r.LEff))
+             .Append(",\"g\":").Append(N(r.G))
+             .Append(",\"stopPx\":").Append(N(r.StopPx))
+             .Append(",\"spacingSource\":").Append(S(r.SpacingSource))
+             .Append(",\"addsAborted\":").Append(r.AddsAborted ? "true" : "false")
+             .Append(",\"abortWhy\":").Append(S(r.AbortWhy))
+             .Append(",\"outcome\":").Append(S(r.Outcome))
+             .Append(",\"pnl\":").Append(N(r.Pnl))
+             .Append(",\"minUnrealized\":").Append(N(r.MinUnrealized))
+             .Append(",\"barsCapped\":").Append(r.BarsCapped ? "true" : "false");
+
+            b.Append(",\"fills\":[");
+            for (int i = 0; i < r.Fills.Count; i++)
+            {
+                var f = r.Fills[i];
+                if (i > 0) b.Append(',');
+                b.Append("{\"ts\":").Append(S(Ts(f.Ts)))
+                 .Append(",\"level\":").Append(f.Level)
+                 .Append(",\"plannedPx\":").Append(N(f.PlannedPx))
+                 .Append(",\"fillPx\":").Append(N(f.FillPx))
+                 .Append(",\"qty\":").Append(f.Qty).Append('}');
+            }
+            b.Append("],\"bars\":[");
+            for (int i = 0; i < r.Bars.Count; i++)
+            {
+                var bar = r.Bars[i];
+                if (i > 0) b.Append(',');
+                b.Append('[').Append(S(Ts(bar.Ts))).Append(',')
+                 .Append(N(bar.High)).Append(',').Append(N(bar.Low)).Append(',')
+                 .Append(N(bar.Close)).Append(']');
+            }
+            b.Append("]}");
+            return b.ToString();
+        }
+    }
 }
