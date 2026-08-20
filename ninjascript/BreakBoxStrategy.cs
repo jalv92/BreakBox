@@ -1800,7 +1800,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                         PlannedPx = _avgAvgPx, FillPx = price, Qty = quantity
                     });
                     if (sig == SigAvgTp)
+                    {
                         _bracket.QtyOpen = _avgQty - _bracket.QtyClosed;   // mirror of OnAddExecution: books stay truthful on the averaging exit
+
+                        // A PARTIAL TP fill shrank the stack, and the tier
+                        // branch that re-covers the base bracket never runs here
+                        // (an averaging trade has Tiers == 0). Without this, NT8
+                        // cancels the now-oversized stop on its own, that cancel
+                        // ref-matches, and the deferred verdict latches
+                        // StopCancelled on a stack that still has contracts in
+                        // the market. Same idiom as the tier branch, and gated on
+                        // QtyOpen so the fill that EMPTIED the position falls
+                        // through to the close-out below instead.
+                        if (_bracket.QtyOpen > 0)
+                        {
+                            _stopOrder = null;
+                            _lastStopSent = double.NaN;
+                            SubmitStop("avgtp:resize");
+                        }
+                    }
                 }
             }
 
@@ -1902,14 +1920,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _entryOrder = order;
             else if (sig == SigStop)
             {
-                // Adopt anything EXCEPT a Cancelled one. The submit paths drop
-                // the reference on purpose before every cancel-replace, and
-                // re-adopting the dead order here would put it straight back —
-                // which both hands the hand-pull detector below a false match
-                // and, when the replacement's Working event happens to arrive
-                // first, leaves CancelBracketLegs holding a corpse while the
-                // real stop rests on after the trade is over.
-                if (orderState != OrderState.Cancelled)
+                // Adopt anything EXCEPT an order on its way out. The submit
+                // paths drop the reference on purpose before every
+                // cancel-replace, and re-adopting the dead order here would put
+                // it straight back — which both hands the hand-pull detector
+                // below a false match and, when the replacement's Working event
+                // happens to arrive first, leaves CancelBracketLegs holding a
+                // corpse while the real stop rests on after the trade is over.
+                //
+                // The WHOLE cancel path is a corpse, not just the terminal
+                // state: NT8 walks CancelPending -> CancelSubmitted ->
+                // Cancelled, and adopting either of the first two puts the dead
+                // order back in front of the detector. ChangePending/
+                // ChangeSubmitted are NOT on this list — those are a modify of
+                // the same live order, which is still ours.
+                if (orderState != OrderState.Cancelled
+                    && orderState != OrderState.CancelPending
+                    && orderState != OrderState.CancelSubmitted)
                     _stopOrder = order;
                 if (orderState == OrderState.Working || orderState == OrderState.Accepted)
                 {
