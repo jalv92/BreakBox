@@ -32,7 +32,7 @@ namespace BreakBoxCore
     {
         public double TickSize = 0.25;
         public double TickValue = 5.0;        // dollars per tick per contract — from the instrument, never assumed
-        public int MaxAdds = 2;               // N (host dial clamps 1..2; the engine is general)
+        public int MaxAdds = 2;               // N (host dial: 1..32; the budget envelope, not a clamp, is the restraint)
         public int AddQty = 1;                // q, flat per add
         public double BudgetDollars = 0.0;    // L_arm — the trade's slice of the daily loss limit
         public double TargetDollars = 150.0;  // G — net profit the trade still aims for
@@ -42,7 +42,7 @@ namespace BreakBoxCore
         public int ConfirmBars = 1;           // closes back beyond a touched level before adding
         public double VolAbortMult = 2.0;     // one-way: ATR above this multiple of entry ATR kills remaining adds
         public const int TP_FLOOR_TICKS = 8;  // TP never collapses inside spread+queue+commission
-        public const int MAX_LEVELS = 8;
+        public const int MAX_LEVELS = 32;
     }
 
     // One armed grid. The engine's ONLY memory; nothing it needs may live in the shell.

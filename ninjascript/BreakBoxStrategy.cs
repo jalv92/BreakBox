@@ -76,12 +76,31 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SigTp3 = "BB_TP3";
         private const string SigFlatten = "BB_Flatten";
 
-        // Averaging lab (SIM-ONLY). Distinct names so OnOrderUpdate can fork:
-        // a rejected add is survivable, a rejected protective order is not.
-        private const string SigAdd1 = "BB_Add1";
-        private const string SigAdd2 = "BB_Add2";
+        // Averaging lab (SIM-ONLY). One signal name per level so OnOrderUpdate
+        // can fork: a rejected add is survivable, a rejected protective order
+        // is not. N is user-defined (1..32), so the name is built, not fixed.
+        private const string AddSigPrefix = "BB_Add";
         private const string SigAvgTp = "BB_AvgTp";
         private const string SigOrphanExit = "BB_OrphanExit";
+
+        private static string AddSig(int level)
+        {
+            return AddSigPrefix + (level + 1);
+        }
+
+        // Matches ONLY "BB_Add<digits>" — by construction this cannot collide
+        // with SigAvgTp ("BB_AvgTp") or any other BB_* signal.
+        private static bool TryAddSigLevel(string sig, out int level)
+        {
+            level = -1;
+            if (sig == null || !sig.StartsWith(AddSigPrefix, StringComparison.Ordinal))
+                return false;
+            int n;
+            if (!int.TryParse(sig.Substring(AddSigPrefix.Length), out n) || n < 1)
+                return false;
+            level = n - 1;
+            return true;
+        }
 
         private static readonly string[] TierSig = { SigTp1, SigTp2, SigTp3 };
 
@@ -1456,7 +1475,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void SubmitAdd(int level)
         {
             int q = AveragingAddQty;
-            string sig = level == 0 ? SigAdd1 : SigAdd2;
+            string sig = AddSig(level);
             Print(string.Format(CultureInfo.InvariantCulture,
                 "BreakBox AVG: level {0} confirmed @ {1} — adding {2} at market ({3})",
                 level + 1, _avgPlan.LevelPx[level], q, sig));
@@ -1552,7 +1571,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // Same fork as SubmitStop, for the same reason: a named
                 // fromEntrySignal closes only THAT entry's quantity, and an
-                // averaging stack was built under BB_Long + BB_Add1 + BB_Add2.
+                // averaging stack was built under BB_Long + one BB_Add<N> per level.
                 // Naming the entry here left every add in the market, unstopped,
                 // after a session flatten or a rejected leg.
                 string fromSig = _avgArmed ? "" : _entrySig;
@@ -1761,7 +1780,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // it: _avgArmed is already false, so the add branch below is dead and
             // the contracts would sit in the market with no stop behind them. The
             // direction comes off the order, never off _dir, which WentFlat zeroed.
-            if ((sig == SigAdd1 || sig == SigAdd2) && quantity > 0 && !_inTrade)
+            int _orphanLvl;
+            if (TryAddSigLevel(sig, out _orphanLvl) && quantity > 0 && !_inTrade)
             {
                 Print("BreakBox AVG: ORPHAN add fill after flat — exiting " + quantity + " at market");
                 if (execution.Order.IsLong) ExitLong(0, quantity, SigOrphanExit, sig);
@@ -1771,11 +1791,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // An add executed. Accumulate OUR average/quantity (Position may be
             // stale in-stack), recompute stop+TP from the REAL numbers, resize.
-            if (_avgArmed && _inTrade && (sig == SigAdd1 || sig == SigAdd2) && quantity > 0
+            int _addLvl;
+            if (_avgArmed && _inTrade && TryAddSigLevel(sig, out _addLvl) && quantity > 0
                 && (execution.Order.OrderState == OrderState.Filled
                     || execution.Order.OrderState == OrderState.PartFilled))
             {
-                OnAddExecution(sig == SigAdd1 ? 0 : 1, price, quantity, time);
+                OnAddExecution(_addLvl, price, quantity, time);
                 return;
             }
 
@@ -1861,12 +1882,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // SAFER under the envelope (monotone loss). Mark the level dead
                 // and keep trading — routing this through FlattenAll would turn
                 // a routine rejection into a realized loss.
-                if (sig == SigAdd1 || sig == SigAdd2)
+                int _rejLvl;
+                if (TryAddSigLevel(sig, out _rejLvl))
                 {
-                    int lvl = sig == SigAdd1 ? 0 : 1;
-                    if (_avgPlan != null)
-                        _avgPlan.Dead[lvl] = true;
-                    Print("BreakBox AVG: add level " + (lvl + 1) + " dead after rejection — position keeps its current size");
+                    if (_avgPlan != null && _rejLvl >= 0 && _rejLvl < _avgPlan.Levels)
+                        _avgPlan.Dead[_rejLvl] = true;
+                    Print("BreakBox AVG: add level " + (_rejLvl + 1) + " dead after rejection — position keeps its current size");
                     return;
                 }
                 if (sig == SigStop || sig == SigTp1 || sig == SigTp2 || sig == SigTp3 || sig == SigAvgTp)
@@ -2367,8 +2388,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Averaging enabled (SIM-ONLY LAB)", Description = "Averaging-down laboratory. Refuses to arm on any non-Sim/Playback account. Module-ON is a DIFFERENT strategy from module-OFF and validates separately.", Order = 1, GroupName = "08. Averaging lab")]
         public bool AveragingEnabled { get; set; }
 
-        [NinjaScriptProperty, Range(1, 2)]
-        [Display(Name = "Max adds (N)", Description = "Hard-clamped to 2: all of the benefit is at the first add; depth only levers the tail", Order = 2, GroupName = "08. Averaging lab")]
+        [NinjaScriptProperty, Range(1, 32)]
+        [Display(Name = "Max adds (N)", Description = "User-defined depth; the budget still binds — a deep grid solves to a tighter spacing or refuses to arm", Order = 2, GroupName = "08. Averaging lab")]
         public int AveragingMaxAdds { get; set; }
 
         [NinjaScriptProperty, Range(1, 10)]

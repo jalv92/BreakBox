@@ -53,6 +53,9 @@ stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming b
 `target_too_small_for_stack`. Run the lab with `BaseQuantity = 1`, or raise
 `AveragingTargetProfitDollars` and `DailyLossLimit` together. On MNQ also set
 `AveragingCommissionRt` to the MNQ round-turn (about $1.34) — the default is the NQ one.
+`AveragingMaxAdds` is a 1..32 dial, not a clamp: deep grids at the default budget solve to
+~1-tick spacing on MNQ, so raise `DailyLossLimit`/`AveragingBudgetFraction` or lower
+`AveragingStopBufferTicks` for a usable deep grid.
 
 **Playback verification checklist (run once after any change to the module):**
 1. Live-account guard: enable on a non-Sim account name → one loud print, module off, normal bracket runs.

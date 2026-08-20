@@ -69,7 +69,7 @@ The lab exists to measure whether confirmation-gating pushes p above it. Expecte
 
 | Decision | Choice | Why |
 |---|---|---|
-| Max adds `N` | dial, clamped **1..2**, default 2 | all of the benefit is at the first add; N≥3 only levers the tail. Lucid-50K arithmetic admits at most N=2 anyway |
+| Max adds `N` | dial, **1..32**, default 2 | originally clamped to 2: all of the benefit is at the first add, N≥3 only levers the tail, and Lucid-50K arithmetic admits at most N=2 anyway. **User override, 2026-08-20: the user sets the depth; the budget envelope, not a clamp, is the restraint** — a big N against a fixed budget shrinks `d` or refuses to arm on its own |
 | Sizing | **flat** q per add, never geometric | under a fixed budget, back-loading is a martingale generator; flat keeps the envelope exact and the tail linear |
 | Add trigger | **confirmation-gated**: level touched, then a bar CLOSES back on the favorable side of it → market add, once per level | the only design with a route to p > p*: on a straight-line adverse move it never fires, so size correlates negatively with trend strength. Blind resting limits are the placebo, not the product |
 | Spacing `d` | `min(d_structural, d_max_from_L)`, frozen at arm | L is the hard ceiling; structure only informs. Structural source: box height for box-engine trades, `AtrMult × ATR` for cloud-engine trades (Auto) |
@@ -144,7 +144,7 @@ per-bar path `[t, h, l, c]` from entry to exit so ANY counterfactual (flat q wit
 | Dial | Type / default | Meaning |
 |---|---|---|
 | `AveragingEnabled` | bool, **false** | master switch |
-| `AveragingMaxAdds` | int 1..2, default 2 | N |
+| `AveragingMaxAdds` | int 1..32, default 2 | N — commissions, tail overshoot, and the required sample all scale with N; the lab measures it either way |
 | `AveragingAddQty` | int, default = base quantity | q |
 | `AveragingBudgetFraction` | 0..1, default 0.5 | share of DailyLossLimit one trade may risk |
 | `AveragingTargetProfitDollars` | double, default 150 | G — explicit, never inferred from Tp1R. Default is 150, not 100, because the §2 TP-floor constraint needs G ≥ Q_N·(8v − c) = $102.72 on NQ at q=1, N=2 — a $100 default would refuse to arm out of the box |

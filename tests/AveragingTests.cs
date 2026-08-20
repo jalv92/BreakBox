@@ -23,6 +23,9 @@ public static class AveragingTests
 
         T.Section("Averaging: telemetry");
         SerialiseIsOneInvariantJsonLine();
+
+        T.Section("Averaging: deep grid (N unclamped)");
+        DeepGridSolvesWithTenAdds();
     }
 
     private static AvgConfig NqCfg()
@@ -264,5 +267,35 @@ public static class AveragingTests
         T.Check(line.Contains("\"fills\":[") && line.Contains("\"level\":-1"), "entry fill rides as level -1");
         T.Check(line.Contains("\"bars\":[[\"2026-08-19T18:05:30\",20001,19999.5,20000.5]]"), "bar path is a compact array");
         T.Check(line.Contains("\"dTicks\":12") && line.Contains("\"lEff\":521.2"), "solved geometry serialised");
+    }
+
+    // 2026-08-20 amendment: the host's N<=2 clamp is gone (the user sets the
+    // depth; the budget envelope is the restraint, not a code limit). Pins the
+    // deep-grid arithmetic by hand — MNQ, N=10 adds of 2 each (22-lot stack) —
+    // so a future change to the solver loop cannot silently widen the grid.
+    private static void DeepGridSolvesWithTenAdds()
+    {
+        var c = new AvgConfig();
+        c.TickSize = 0.25;
+        c.TickValue = 0.50;          // MNQ
+        c.MaxAdds = 10;
+        c.AddQty = 2;
+        c.StopBufferTicks = 8;
+        c.CommissionRt = 1.34;
+        c.SlippageReserveTicks = 2;
+        c.ConfirmBars = 1;
+        c.VolAbortMult = 2.0;
+        c.TargetDollars = 150.0;
+        c.BudgetDollars = 225.0;
+
+        var p = AvgEngine.Arm(c, 1, 20000.00, 2, 100000.0, 12.0);
+        T.Check(p.Armed, "deep grid (N=10) arms on a modest MNQ budget");
+        // qn = 2 + 2*10 = 22; LEff = 225 - 22*1.34 - 0.5*22*2 = 173.52
+        T.CheckClose(p.LEff, 173.52, "LEff nets commissions and slippage reserve for the 22-lot stack", 1e-6);
+        // denom = 10*22 - 2*10*11/2 = 110; budget ticks = 173.52/0.5 = 347.04
+        // d = floor((347.04 - 8*22)/110) = floor(171.04/110) = 1
+        T.CheckInt(p.DTicks, 1, "budget at N=10 solves to a tight 1-tick spacing, not a refusal");
+        T.CheckInt(p.STicks, 8, "s stays at the user's 8 (already >= d/2)");
+        T.Check(AvgEngine.WorstCaseLoss(c, p) <= p.LEff + 1e-6, "worst case still <= LEff at N=10");
     }
 }
