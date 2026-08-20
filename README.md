@@ -71,6 +71,12 @@ stack 5 contracts, and the TP floor then needs `G >= $171.20` while the arming b
 9. Reading `minUnrealized`: it samples bar highs/lows from entry to exit, so it does NOT
    include the exit bar's intrabar excursion. Treat it as a floor on the drawdown, not the
    drawdown.
+10. **Runner stays protected (base bracket, module OFF too).** On a 2-lot trade, after TP1
+    fills the output must show the tier resize/breakeven print AND the Orders tab must show a
+    WORKING 1-lot stop. `stop cancelled by hand` must NOT appear — nobody touched anything.
+11. **A hand drag is not a hand pull.** Drag the stop in Chart Trader mid-trade: protection
+    must survive, either adopted at the new price or re-covered by the strategy. A silent
+    unprotected runner is a failure of this check even if nothing prints.
 
 ## Status and limits
 

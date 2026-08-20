@@ -783,6 +783,30 @@ namespace NinjaTrader.NinjaScript.Strategies
                     SubmitStop("watchdog");
                 }
 
+                // The verdict on a stop cancel we did not ask for (raised in
+                // OnOrderUpdate). Deferred on purpose: the alarm fires on the
+                // Cancelled event, but a cancel-replace is TWO events, and
+                // judging on the first one convicts our own machinery. After
+                // the grace window, a working stop means the position got
+                // re-covered — by our resubmit, or by the human dragging the
+                // stop, which NT8 may deliver as a cancel-replace that
+                // re-adopts under the same signal name. A move must never read
+                // as a pull. Only a still-uncovered position is a real pull.
+                if (_stopCancelAt != DateTime.MinValue
+                    && (DateTime.Now - _stopCancelAt).TotalSeconds > BracketCancelGraceSec
+                    && !_stopChangePending && !_bracket.StopCancelled)
+                {
+                    bool covered = _stopOrder != null
+                                   && (_stopOrder.OrderState == OrderState.Working
+                                       || _stopOrder.OrderState == OrderState.Accepted);
+                    if (!covered)
+                    {
+                        BbExits.AdoptManualStop(_bracket, _bracket.StopPx, true);
+                        Print("BreakBox: stop cancelled by hand — not resubmitting");
+                    }
+                    _stopCancelAt = DateTime.MinValue;
+                }
+
                 var d = BbExits.OnBarClose(_exitCfg, _bracket, bar, _atr.Value);
                 if (d.StopMoved)
                     SubmitStop("bar:" + d.Why);
@@ -1199,6 +1223,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Prices and submits the whole bracket. Called once, from the entry fill.
         private void OpenBracket(double fillPx, int qty)
         {
+            // Per-trade, and first: an alarm belongs to the trade that raised
+            // it. Both bracket flavours come through here.
+            _stopCancelAt = DateTime.MinValue;
+
             if (AveragingEnabled)
             {
                 string why;
@@ -1535,6 +1563,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!double.IsNaN(_lastStopSent) && Math.Abs(px - _lastStopSent) < TickSize / 2.0)
                 return;                                 // nothing changed
 
+            // Cancel-replace by reference, same as SubmitAvgTp: the ref is
+            // dropped BEFORE the submit, so the Cancelled event our own replace
+            // produces carries an order that matches nothing and the hand-pull
+            // detector in OnOrderUpdate cannot misread it. It goes here and not
+            // at the top of the method on purpose — an early return above would
+            // otherwise leave us holding no reference to a stop that is still
+            // working.
+            _stopOrder = null;
             _stopChangePending = true;
             _stopChangeSentAt = DateTime.Now;
             _lastStopSent = px;
@@ -1689,6 +1725,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _flattenPending = false;
             _stopChangePending = false;
             _lastStopSent = double.NaN;
+            _stopCancelAt = DateTime.MinValue;
 
             // Cancel whatever is still resting, BEFORE the references are dropped.
             // Nothing in this strategy ever cancelled these, and every one was
@@ -1813,6 +1850,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // approach will shrink an oversized exit on its own, but
                     // doing it explicitly is what keeps _lastStopSent, the
                     // bracket and the platform describing the same order.
+                    //
+                    // The ref is dropped FIRST because that auto-shrink cancels
+                    // the old stop on its own initiative, at a moment we do not
+                    // control — possibly before this line. Nulling here makes
+                    // that Cancelled unmatchable too, so the hand-pull detector
+                    // reads NT8's housekeeping for what it is. This is the bug
+                    // that left a 1-lot runner unprotected after TP1.
+                    _stopOrder = null;
                     _lastStopSent = double.NaN;
                     SubmitStop(d.StopMoved ? "tier:be" : "tier:resize");
                     DrawLevels();
@@ -1857,9 +1902,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _entryOrder = order;
             else if (sig == SigStop)
             {
-                _stopOrder = order;
+                // Adopt anything EXCEPT a Cancelled one. The submit paths drop
+                // the reference on purpose before every cancel-replace, and
+                // re-adopting the dead order here would put it straight back —
+                // which both hands the hand-pull detector below a false match
+                // and, when the replacement's Working event happens to arrive
+                // first, leaves CancelBracketLegs holding a corpse while the
+                // real stop rests on after the trade is over.
+                if (orderState != OrderState.Cancelled)
+                    _stopOrder = order;
                 if (orderState == OrderState.Working || orderState == OrderState.Accepted)
+                {
                     _stopChangePending = false;
+                    // A working stop is proof the position is covered, so any
+                    // pending cancel alarm was about an order we have replaced.
+                    _stopCancelAt = DateTime.MinValue;
+                }
             }
             else if (sig == SigAvgTp)
             {
@@ -1911,17 +1969,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // A stop CANCELLED while we are still positioned, and not by us, is
-            // a human pulling it in Chart Trader. Respect it permanently.
-            if (sig == SigStop && orderState == OrderState.Cancelled && _inTrade && !_flattenPending)
+            // A stop CANCELLED while we are still positioned, and not by us,
+            // MIGHT be a human pulling it in Chart Trader. Only might: the
+            // matching REFERENCE is what separates the candidates. Every cancel
+            // this strategy causes — a resize, a breakeven move, NT8's own OCO
+            // shrink when a tier fills — is preceded by dropping the reference,
+            // so a Cancelled that still matches the order we believe is live is
+            // the one nobody here asked for. Matching on the signal NAME
+            // instead, which is what this did, could not tell the two apart,
+            // and adopted "by hand" on the platform's own housekeeping.
+            //
+            // Nothing is decided here. This only raises the alarm; the verdict
+            // is the deferred check in OnBarUpdate, which gives our machinery
+            // the grace window to re-cover the position first.
+            if (sig == SigStop && orderState == OrderState.Cancelled && _inTrade && !_flattenPending
+                && _stopOrder != null && order == _stopOrder)
             {
-                if (_stopCancelAt == DateTime.MinValue)
-                    _stopCancelAt = DateTime.Now;
-                else if ((DateTime.Now - _stopCancelAt).TotalSeconds > BracketCancelGraceSec)
-                {
-                    BbExits.AdoptManualStop(_bracket, _bracket.StopPx, true);
-                    Print("BreakBox: stop cancelled by hand — not resubmitting");
-                }
+                _stopCancelAt = DateTime.Now;
+                _stopOrder = null;                  // that order is gone either way
             }
         }
 
