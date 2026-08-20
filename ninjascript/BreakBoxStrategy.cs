@@ -139,6 +139,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Trade / order state. Every one of these is written BEFORE the submit
         // that makes it true (the order-event race).
         private bool _inTrade, _entryPending, _flattenPending;
+        // Wall clock of the flatten submit, for the retry watchdog in
+        // OnBarUpdate. A flatten that is rejected or never fills leaves
+        // _flattenPending stuck true, and FlattenAll's early return then makes
+        // every later attempt — the panel's, the session's — a silent no-op.
+        private DateTime _flattenSentAt = DateTime.MinValue;
         private int _dir, _qty;
         private string _entrySig = "";
         private Order _entryOrder, _stopOrder;
@@ -345,7 +350,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // ---- Session and governor
                 EntryWindowStartHhmm = 930;
                 EntryWindowEndHhmm = 1545;
-                FlattenHhmm = 1655;
+                FlattenHhmm = 1600;
                 MaxTradesPerBox = 1;
                 MaxTradesPerDay = 30;
                 // ON. §7.1 makes this load-bearing: with TP1 at 0.50R taking
@@ -452,6 +457,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                           + "above is ESTIMATED from history gaps, not exact wall-clock time. Every "
                           + "seconds-based horizon (ATR gates, bar budgets, TriggerLife, ...) converts "
                           + "through it, so all of them inherit that approximation.");
+
+                // The flatten window runs [FlattenHhmm, SessionOpenHhmm) and
+                // InWindow calls an empty window empty, never "always". Set the
+                // two dials to the same clock time and the timed exit is simply
+                // GONE — no error, no flatten, positions ride into the session
+                // close. A silently disabled flatten is the exact failure this
+                // watchdog work exists to end, so it gets said out loud.
+                if (BbMath.HhmmToSecs(FlattenHhmm) == BbMath.HhmmToSecs(SessionOpenHhmm))
+                    Print("BreakBox WARNING: Flatten HHMM (" + FlattenHhmm
+                          + ") equals Session open HHMM (" + SessionOpenHhmm
+                          + ") — the flatten window is EMPTY and the timed exit is DISABLED. "
+                          + "Nothing will be closed on time. Move one of the two.");
             }
             else if (State == State.Realtime)
             {
@@ -785,6 +802,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                     SubmitStop("watchdog");
                 }
 
+                // The same idea for the flatten. FlattenAll early-returns while
+                // _flattenPending is true and only WentFlat clears it, so a
+                // flatten exit that was rejected or never filled left the flag
+                // stuck true and turned every later attempt — the session's and
+                // the panel's — into a silent no-op with the position still
+                // open. Clearing the flag is ALL this does; the TimeToFlatten
+                // latch below re-submits on this same bar. Both extra guards
+                // carry weight: the elapsed check leaves an exit that is
+                // legitimately in flight alone, and an already-flat position
+                // needs nothing from here because WentFlat clears the flag on
+                // its own. Wall clock, like every other watchdog here.
+                if (_flattenPending && _flattenSentAt != DateTime.MinValue
+                    && (DateTime.Now - _flattenSentAt).TotalSeconds > ExitChangeWatchdogSec
+                    && Position.MarketPosition != MarketPosition.Flat)
+                {
+                    Print("BreakBox: flatten unacknowledged after "
+                          + ExitChangeWatchdogSec + "s — retrying");
+                    _flattenPending = false;
+                    _flattenSentAt = DateTime.MinValue;
+                }
+
                 // The verdict on a stop cancel we did not ask for (raised in
                 // OnOrderUpdate). Deferred on purpose: the alarm fires on the
                 // Cancelled event, but a cancel-replace is TWO events, and
@@ -951,10 +989,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (!_inTrade && !_entryPending)
                 return false;
-            int flat = BbMath.HhmmToSecs(FlattenHhmm);
-            // Only fires on the bar that CROSSES the boundary, which on a 1m
-            // series is the minute the flatten time falls in.
-            return secs >= flat && secs < flat + 60;
+            // A LATCH, not a one-minute window. The old form fired only if a bar
+            // happened to close inside the single minute the boundary fell in —
+            // on a thin tape, or for a position opened after it, the timed exit
+            // never happened at all and the trade rode on. The window runs from
+            // the flatten time to the SESSION OPEN, which is what keeps the
+            // evening block (same seconds-of-day, next session) out of it;
+            // InWindow owns the wraparound.
+            return BbMath.InWindow(secs, BbMath.HhmmToSecs(FlattenHhmm),
+                                         BbMath.HhmmToSecs(SessionOpenHhmm));
         }
 
         // §13 step 1 — the histogram increment. A depth of -1 (the engine
@@ -1611,7 +1654,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (_flattenPending)
                 return;
+            // Tracker before the submit, same house rule as SubmitStop: the
+            // watchdog in OnBarUpdate reads this stamp, and a flatten whose
+            // submit fires before the clock is set is a flatten it can never
+            // time out.
             _flattenPending = true;
+            _flattenSentAt = DateTime.Now;
             _exitReason = why;
 
             CancelWorkingEntry(why);
@@ -1628,7 +1676,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else
             {
+                // Nothing to close — the working entry above was the whole of
+                // it. No submit went out, so nothing may be waiting on a fill.
                 _flattenPending = false;
+                _flattenSentAt = DateTime.MinValue;
             }
         }
 
@@ -1735,6 +1786,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             _inTrade = false;
             _flattenPending = false;
+            _flattenSentAt = DateTime.MinValue;
             _stopChangePending = false;
             _lastStopSent = double.NaN;
             _stopCancelAt = DateTime.MinValue;
@@ -2439,7 +2491,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int EntryWindowEndHhmm { get; set; }
 
         [NinjaScriptProperty, Range(0, 2359)]
-        [Display(Name = "Flatten HHMM", Order = 3, GroupName = "06. Session")]
+        [Display(Name = "Flatten HHMM", Description = "Every open position is closed at this time. The window runs from here until the session open, so a position opened later in the block is closed too", Order = 3, GroupName = "06. Session")]
         public int FlattenHhmm { get; set; }
 
         [NinjaScriptProperty, Range(1, 100)]
