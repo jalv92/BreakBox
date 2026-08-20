@@ -185,5 +185,85 @@ namespace BreakBoxCore
                 lossTicks += cfg.AddQty * (p.LevelPx[i] - p.StopPx) * p.Dir / cfg.TickSize;
             return lossTicks * cfg.TickValue;
         }
+
+        // Recomputes the live stop and TP from the ACTUAL average and quantity —
+        // the plan's table is geometry, this is the guarantee. Confirmation adds
+        // fill above their level, so the real average is worse than planned; the
+        // stop that spends exactly LEff from the real average then sits above
+        // the planned bottom, and it wins. One-way: the stop only ratchets
+        // toward price, never away.
+        public static AvgUpdate OnFill(AvgConfig cfg, AvgPlan p, double avgPx, int qty)
+        {
+            double tick = cfg.TickSize;
+            int dir = p.Dir;
+
+            double sBudget = avgPx - dir * p.LEff * tick / (cfg.TickValue * qty);
+            sBudget = dir > 0 ? CeilToTick(sBudget, tick) : FloorToTick(sBudget, tick);
+            bool moved = (sBudget - p.StopPx) * dir > 1e-9;
+            if (moved)
+                p.StopPx = sBudget;
+
+            // Levels the stop has overtaken can no longer be bought: an add
+            // below the stop is a fill the envelope never priced.
+            for (int i = 0; i < p.Levels; i++)
+                if (!p.Fired[i] && !p.Dead[i]
+                    && (p.LevelPx[i] - (p.StopPx + dir * tick)) * dir <= 0.0)
+                    p.Dead[i] = true;
+
+            double tp = avgPx + dir * (cfg.TargetDollars + cfg.CommissionRt * qty) * tick / (cfg.TickValue * qty);
+            AvgUpdate u;
+            u.StopPx = p.StopPx;
+            u.TpPx = dir > 0 ? CeilToTick(tp, tick) : FloorToTick(tp, tick);
+            u.StopMoved = moved;
+            u.Why = moved ? "budget_ratchet" : "fill";
+            return u;
+        }
+
+        // The confirmation state machine, one CLOSED bar at a time. Touch and
+        // reclaim may happen on the same bar — that IS the pattern. Straight-line
+        // adverse moves never confirm, which is the entire point: size correlates
+        // negatively with trend strength.
+        public static int OnBarClosed(AvgConfig cfg, AvgPlan p, double barHigh, double barLow,
+                                      double barClose, int[] fireIdx)
+        {
+            if (p == null || !p.Armed || p.AddsAborted)
+                return 0;
+            int dir = p.Dir, n = 0;
+            for (int i = 0; i < p.Levels; i++)
+            {
+                if (p.Fired[i] || p.Dead[i])
+                    continue;
+                double lvl = p.LevelPx[i];
+                if ((dir > 0 && barLow <= lvl) || (dir < 0 && barHigh >= lvl))
+                    p.Touched[i] = true;
+                if (!p.Touched[i])
+                    continue;
+                bool closedBack = dir > 0 ? barClose >= lvl : barClose <= lvl;
+                if (!closedBack)
+                {
+                    p.CloseBacks[i] = 0;
+                    continue;
+                }
+                p.CloseBacks[i]++;
+                if (p.CloseBacks[i] >= cfg.ConfirmBars)
+                {
+                    p.Fired[i] = true;
+                    fireIdx[n++] = i;
+                }
+            }
+            return n;
+        }
+
+        // One-way vol abort (spec: adaptivity may only ever REDUCE exposure).
+        // True only on the transition so the shell prints once.
+        public static bool VolAbort(AvgConfig cfg, AvgPlan p, double atrNow)
+        {
+            if (p == null || !p.Armed || p.AddsAborted || p.EntryAtr <= 0.0)
+                return false;
+            if (atrNow <= cfg.VolAbortMult * p.EntryAtr)
+                return false;
+            p.AddsAborted = true;
+            return true;
+        }
     }
 }
