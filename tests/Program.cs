@@ -51,6 +51,7 @@ public static class Program
         CloudTests.Run();
         ArbitrationTests.Run();
         HistoryTests.Run();
+        AveragingTests.Run();
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
             ? "ALL PASS (" + T.Checks + " checks)"
