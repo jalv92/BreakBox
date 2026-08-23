@@ -5,3 +5,6 @@ obj/
 tmp/
 .DS_Store
 .superpowers/
+
+# Third-party reference imagery — NEVER commit. See _breakbox-reference/ outside this repo.
+reference/

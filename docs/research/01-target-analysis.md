@@ -2,7 +2,18 @@
 
 **Date:** 2026-08-16
 **Status:** Research complete, no code written yet
-**Source material:** 4 screenshots in `reference/`
+**Source material:** 4 screenshots of two commercial NinjaTrader products from one
+vendor, taken from the vendor's own public sales material and from live sessions.
+
+> **The screenshots are NOT distributed with this repository.** They are a third party's
+> copyrighted product imagery, and one of them shows another person's funded-account
+> name. What is published here is *our* measurement of them. The vendor is referred to
+> throughout as "the vendor", and the two products as **Product A** (the autotrader,
+> order prefix `A_`) and **Product B** (the reduced signal build, order prefix `B_`).
+>
+> Nothing here comes from the vendor's binary, and no code of theirs was decompiled,
+> disassembled or copied. Every number below was read off an image with a ruler and a
+> calculator — see §2 for the arithmetic and `verify_bracket_geometry.py` for the check.
 
 ---
 
@@ -13,12 +24,12 @@ the vendor's own sales page.
 
 | File | Content | Product | Evidence |
 |---|---|---|---|
-| `...16.40.50 (3).jpeg` | the storefront sales page | **Product A (the autotrader) — NinjaTrader**, $197/yr, 4.8★ (54) | Page header + "By the vendor" |
+| `...16.40.50 (3).jpeg` | vendor sales page | **Product A (the autotrader) — NinjaTrader**, $197/yr, 4.8★ (54) | Page header + "By the vendor" |
 | `...16.40.50 (2).jpeg` | Dark chart, MNQ ~26877 | **Product A (the autotrader)** | `the vendor` watermark on dashboard, `A_` order prefix, a funded-account name |
 | `...16.40.50.jpeg` | Light chart, NQ ~23713 | **Product B (the signal build)** | `B_` order prefix |
 | `...16.40.50 (1).jpeg` | Light chart + dashboard | **Product B (the signal build)** | `B_` prefix, Sim101 account |
 
-`B_` = Product B. Both products are sold from the same the storefront store (`the vendor storefront`),
+`B_` = Product B. Both products are sold from the same storefront (one storefront),
 share the same panel/dashboard/bracket machinery, and differ mainly in the signal engine.
 So the two prefixes are the same execution shell wearing two badges.
 
@@ -66,7 +77,7 @@ form of reverse engineering. The line we do not cross is their binary.
 
 ## 3. The architecture they advertise (public claims)
 
-From `the vendor.io` and the the storefront listings:
+From the vendor's site and the storefront listings:
 
 > "Optimise → Validate → Forward Test → Deploy"
 
@@ -81,7 +92,7 @@ From `the vendor.io` and the the storefront listings:
   **up to 10 funded accounts, each with its own risk**, per-account profit target and loss cap.
 - **Instruments:** NQ/MNQ, ES/MES, GC/MGC, CL/MCL. NinjaTrader 8 only, no external bridge.
 
-Signal components named (Golden Candle / Product B line):
+Signal components named (the signal-build line):
 multi-timeframe confirmation, **RSI**, **MACD**, "Trend Theory", "Volume Bubbles",
 market structure (**swings, break lines, trend waves**), institutional/"premium" zones,
 higher-timeframe alignment, 3-tier targets, dynamic trailing stop, breakeven on TP hits,
@@ -179,7 +190,7 @@ Read off the upscaled crop of image (2):
 AUTO-TRADE  [ON]                              READY     ← status: READY / ...
 Signal      [ON]        Break     [OFF]                 ← two independent entry engines
 Buy         [ON]        Sell      [ON]                  ← direction gates
-Account:    < APEX1261870000003 >                       ← account cycler (prop account)
+Account:    < a funded account1261870000003 >                       ← account cycler (prop account)
 [ Flatten ] [ BE ]                       [ Lock Out ]
 [ Manual Buy ]                          [ Manual Sell ]
 Risk:   [0.5x] [ 1x ] [1.5x]                            ← 1x selected (cyan)
@@ -326,8 +337,8 @@ whether the box signal survives. Layer 4 is where the actual intellectual value 
 
 ## Sources
 
-- [Product A (the autotrader) — official site](the vendor's site)
-- [Product A (the autotrader) — NinjaTrader (the storefront)](the vendor storefront
-- [Product B (the signal build) — Golden Candle Signals / Product B](the vendor storefront
+- The vendor's own product page (not linked — see the note at the top)
+- The autotrader's storefront listing (not linked)
+- The signal build's storefront listing (not linked)
 - [NinjaTrader — UserControlCollection](https://ninjatrader.com/support/helpguides/nt8/usercontrolcollection.htm)
 - [NT8 forum — adding controls inside the chart control](https://forum.ninjatrader.com/forum/ninjatrader-8/add-on-development/97609-adding-controls-inside-the-chart-control)
