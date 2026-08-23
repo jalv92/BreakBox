@@ -91,7 +91,7 @@ rewrites the block. Three tasks across three phases each replacing it wholesale 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS0103: The name 'BbScale' does not exist in the current context`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -129,13 +129,13 @@ In `ninjascript/BreakBoxTypes.cs`, insert between `BbMath`'s closing brace (line
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: `ALL PASS (N checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxTypes.cs tests/ShellTests.cs tests/Program.cs && \
 git commit -m "feat(scale): BbScale.Bars, the one seconds-to-bars conversion" \
   -m "Spec 8. No horizon is expressed in bars on the parameter surface; every dial converts here, floored so a sub-bar horizon cannot silently turn a gate off." \
@@ -196,7 +196,7 @@ In `tests/ShellTests.cs`, add `BarSecondsEstimate();` to `Run()` and the method:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS0117: 'BbScale' does not contain a definition for 'EstimateBarSeconds'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -232,13 +232,13 @@ In `ninjascript/BreakBoxTypes.cs`, inside `BbScale`, after `Bars`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: `ALL PASS (N checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxTypes.cs tests/ShellTests.cs && \
 git commit -m "feat(scale): estimate bar seconds for tick/volume/range series" \
   -m "Median so one overnight gap cannot restate a 12s chart as 3m. Returns 0 rather than guessing off thin history, so the caller falls back loudly." \
@@ -264,7 +264,7 @@ git commit -m "feat(scale): estimate bar seconds for tick/volume/range series" \
 The conformance gate — the bar-valued spelling may not survive anywhere, on the surface or in the config:
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 grep -rn 'TriggerLifeBars' ninjascript/ tests/
 ```
 
@@ -398,13 +398,13 @@ And `BarSeconds()`, added at the end of the Lifecycle region (before the `#endre
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -rn 'TriggerLifeBars' ninjascript/ tests/ ; bash scripts/check.sh`
+Run: `cd "<repo>" && grep -rn 'TriggerLifeBars' ninjascript/ tests/ ; bash scripts/check.sh`
 Expected: the grep prints nothing (exit 1 from grep is expected), then `ALL PASS` and `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxStrategy.cs ninjascript/BreakBoxCore.cs tests/BoxTests.cs && \
 git commit -m "feat(shell): BarSeconds() and the seconds-to-bars conversion in BuildConfigs" \
   -m "Spec 8. Trigger life is now seconds on the surface and BbConfig.TriggerLife in the config, so the two can never share a spelling again. The conversion sits inside BuildConfigs because every panel toggle rebuilds the config, and a rebuild that skipped it would feed the engine raw seconds as a bar count." \
@@ -462,7 +462,7 @@ In `tests/ShellTests.cs`, add `GateReport();` to `Run()` and:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS0246: The type or namespace name 'BbGateReport' could not be found`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -503,13 +503,13 @@ In `ninjascript/BreakBoxTypes.cs`, immediately before `public static class BbSca
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: `ALL PASS (N checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxTypes.cs tests/ShellTests.cs && \
 git commit -m "feat(types): BbGateReport, one block report per engine" \
   -m "Spec 4.2 and 9.3. Depth -1 means 'nothing failed'; 0 would dim the whole ladder. Cloud and box hold separate instances so neither can overwrite the other's explanation." \
@@ -601,7 +601,7 @@ Wire it into the runner:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error|FAIL|ALL PASS"`
 Expected: build error — `error CS0117: 'BbMath' does not contain a definition for 'CloseInRange'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -629,13 +629,13 @@ In `ninjascript/BreakBoxTypes.cs`, insert before the `// ET seconds-of-day from 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: `ALL PASS (<n> checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxTypes.cs tests/VisionTests.cs tests/Program.cs && git commit -m "feat(core): BbMath.CloseInRange — the shared signal-candle ratio, NaN on a flat bar
+cd "<repo>" && git add ninjascript/BreakBoxTypes.cs tests/VisionTests.cs tests/Program.cs && git commit -m "feat(core): BbMath.CloseInRange — the shared signal-candle ratio, NaN on a flat bar
 
 Vision and the cloud engine both need gate (c) from spec §5.2 step 5. One
 implementation so the painted bar and the traded bar cannot disagree.
@@ -665,7 +665,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 First migrate the existing call sites (mechanical, `canTrade` slots in before `positioned`):
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 sed -i -E 's/, (atr|[0-9]+(\.[0-9]+)?), true, false\)/, \1, true, true, false)/g' tests/BoxTests.cs && \
 ! grep -q ', true, false)' tests/BoxTests.cs && \
 grep -c 'true, true, false)' tests/BoxTests.cs
@@ -710,7 +710,7 @@ Then add `CanTradeGatesArmingOnly();` to `BoxTests.Run()` and the case:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS1501: No overload for method 'OnBar' takes 7 arguments`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -760,13 +760,13 @@ The fire gate at line 247:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && bash scripts/check.sh`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && bash scripts/check.sh`
 Expected: `ALL PASS (N checks)` and `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxCore.cs ninjascript/BreakBoxStrategy.cs tests/BoxTests.cs && \
 git commit -m "fix(engine): pass canTrade into OnBar instead of discarding it (B2)" \
   -m "It was computed at Strategy.cs:385 and thrown away at :391, after the engine had already armed and spent latches during warmup and lockout. It now gates arming and firing only; box, excursion and trigger clock still run every bar." \
@@ -850,7 +850,7 @@ Add `TriggerClockAndRefusals();` to `BoxTests.Run()` and:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS1061: 'BbEngine' does not contain a definition for 'LastDisarmReason'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -924,13 +924,13 @@ And the two callbacks, after `OnEntryFilled` (line 276):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: `ALL PASS (N checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && \
 git commit -m "feat(engine): engine-owned trigger clock plus OnEntryRejected/OnTriggerExpired (B6)" \
   -m "The engine already counted from ARM; it now reports the disarm reason so the shell can mirror it instead of running a second clock from SUBMIT. A refusal restores the edge, an expiry does not — and the box rewrite does not change that verdict, it only replaces the single latch with an arms-per-edge budget." \
@@ -957,7 +957,7 @@ git commit -m "feat(engine): engine-owned trigger clock plus OnEntryRejected/OnT
 The gate — every refusal path must reach an engine:
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 grep -nE 'OnEntryRejected\(|MirrorEngineDisarm\(|_owningEngine' ninjascript/BreakBoxStrategy.cs
 ```
 
@@ -1127,13 +1127,13 @@ In `ninjascript/BreakBoxPanel.cs`, `PanelManualEntry` — alongside `_entryPendi
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -cE 'OnEntryRejected\(' ninjascript/BreakBoxStrategy.cs && bash scripts/check.sh`
+Run: `cd "<repo>" && grep -cE 'OnEntryRejected\(' ninjascript/BreakBoxStrategy.cs && bash scripts/check.sh`
 Expected: `4` (the three call sites plus the definition), then `ALL PASS` and `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxCore.cs ninjascript/BreakBoxStrategy.cs ninjascript/BreakBoxPanel.cs && \
 git commit -m "fix(shell): route every refusal to the owning engine, mirror its disarm (B4, B7)" \
   -m "One OnEntryRejected called from qty<1, CancelWorkingEntry and the rejected-order branch; _owningEngine so a refusal never disarms the other engine's trigger; the resting order is now cancelled when the engine disarms, including on an inside close. BbEntryEngine gains Cloud now rather than with the cloud engine, because ownership routing has to be correct on the day the second engine lands." \
@@ -1195,7 +1195,7 @@ Add `DegenerateStopIsImpossible();` to `BracketTests.Run()` and:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS0103: The name 'DegenerateStopIsImpossible' does not exist in the current context` (the harness compiles `Run()` before the method exists; write both, then this step confirms the asserts themselves pass on the untouched `SeedStop`, proving the guard is dead before deleting it)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1217,13 +1217,13 @@ Delete `ninjascript/BreakBoxStrategy.cs` lines 463-473 in full — the comment, 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && grep -c 'degenerate stop' ninjascript/BreakBoxStrategy.cs`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && grep -c 'degenerate stop' ninjascript/BreakBoxStrategy.cs`
 Expected: `ALL PASS (N checks)`, then `0` from the grep
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxStrategy.cs tests/BracketTests.cs && \
 git commit -m "fix(shell): delete the unreachable degenerate-stop refusal (B14)" \
   -m "SeedStop floors the stop distance at one tick after the fallback and both clamps, so |trigger - stop| >= TickSize always. An assert pins that property; the guard and its probe are gone, and B4's callback is deliberately NOT wired to them." \
@@ -1281,7 +1281,7 @@ Add `EntryWindowAndBudget();` to `ShellTests.Run()` and:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: `FAIL the window opens at the cash open (1800 vs 930)` (and four more)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1323,13 +1323,13 @@ Expected: `FAIL the window opens at the cash open (1800 vs 930)` (and four more)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && grep -n 'DailyLossLimit = ' ninjascript/BreakBoxStrategy.cs`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && grep -n 'DailyLossLimit = ' ninjascript/BreakBoxStrategy.cs`
 Expected: `ALL PASS (N checks)` and `DailyLossLimit = 450;`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxCore.cs ninjascript/BreakBoxStrategy.cs tests/ShellTests.cs && \
 git commit -m "fix(session): RTH entry window, a real daily cap, loss limit ON (B8, B9, B10)" \
   -m "09:30-15:45 ET replaces a 22-hour no-op window; the daily cap moves from a swing number to 30 so it cannot silence the design frequency; DailyLossLimit becomes the governor that actually measures risk." \
@@ -1391,7 +1391,7 @@ Add `WarmupGatesOnlyWhatIsUsed();` to `BracketTests.Run()` and:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: compile failure — `error CS0117: 'BbExits' does not contain a definition for 'StopSourceWarm'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1426,13 +1426,13 @@ Expected: compile failure — `error CS0117: 'BbExits' does not contain a defini
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && bash scripts/check.sh`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS" && bash scripts/check.sh`
 Expected: `ALL PASS (N checks)` and `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxExits.cs ninjascript/BreakBoxStrategy.cs tests/BracketTests.cs && \
 git commit -m "fix(shell): warm-up gates only the indicators the active config uses (B13)" \
   -m "The EMA(50) warmup blocked every trade regardless of stop source — 25 minutes of every 30s session paid to a series Candle never reads." \

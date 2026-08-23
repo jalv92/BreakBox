@@ -124,7 +124,7 @@ public static class BoxTests
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS|error CS"`
 Expected: FAIL — build errors, `error CS1501: No overload for method 'OnBar' takes 7 arguments` and `error CS0117: 'BbConfig' does not contain a definition for 'BoxLookback'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -487,13 +487,13 @@ Delete the property blocks at `:856-862`, `:868-882`, `:888-890`, `:900-922`. Pa
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS" && ! grep -rnE "SlotOf|BbBoxSource|HtfMinutes|IbStartHhmm|IbMinutes|SessionCloseHhmm|BreakSpentDir" ninjascript tests --include=*.cs`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS" && ! grep -rnE "SlotOf|BbBoxSource|HtfMinutes|IbStartHhmm|IbMinutes|SessionCloseHhmm|BreakSpentDir" ninjascript tests --include=*.cs`
 Expected: PASS — `ALL PASS`, and the grep finds none of the deleted symbols
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript tests && git commit -m "refactor(core): delete the 240-minute slot machinery, close B11/B12 by deletion
+cd "<repo>" && git add ninjascript tests && git commit -m "refactor(core): delete the 240-minute slot machinery, close B11/B12 by deletion
 
 The box was a wall-clock object validated against a bar-count ATR (275 pts /
 7.85 = 35 ATR vs a ceiling of 6), so no box was ever valid and v1 took zero
@@ -592,7 +592,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains both calls):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL every bar with a full window contributes one sample (0 vs 56)`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -711,13 +711,13 @@ and add the region before `RollDay`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): box FORMATION over a bar window against an unconditional sample ring
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): box FORMATION over a bar window against an unconditional sample ring
 
 The percentile is taken over a ring fed on every bar. Gating the sample on the
 formation test would feed the distribution only ranges that already passed it,
@@ -785,7 +785,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `SealFreezesTheEdges();`):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL BoxMinBars consecutive passing bars seal it`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -842,13 +842,13 @@ and add `Seal` beneath it:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): SEAL — a box gets frozen edges and a monotone id
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): SEAL — a box gets frozen edges and a monotone id
 
 A candidate seals on the BoxMinBars-th consecutive passing bar and is never
 replaced while alive: arms are counted per edge PER BOX ID, so an object that
@@ -917,7 +917,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `InvalidateOnBreakAndOnAge();`):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL a close beyond the edge by more than BoxDeadAtr kills it`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -961,13 +961,13 @@ and add:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): INVALIDATE a box on a BoxDeadAtr close beyond an edge or on BoxMaxAge
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): INVALIDATE a box on a BoxDeadAtr close beyond an edge or on BoxMaxAge
 
 Death runs before formation so the burying bar can also seal the replacement.
 The tolerance is ATR-scaled: a tick count is noise on one instrument and a real
@@ -1034,7 +1034,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `ValidityIsRelativeToEarlierBoxes();`)
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL 1.0x the mean is in band`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1096,13 +1096,13 @@ and add, next to `SealedMean`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): validity gate = winRange over the mean of earlier sealed boxes
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): validity gate = winRange over the mean of earlier sealed boxes
 
 Dimensionless by construction, which is what MinBoxRangeAtr/MaxBoxRangeAtr were
 trying and failing to express. The denominator is read before the box pushes its
@@ -1176,7 +1176,7 @@ Replace `ColdStartIsHardDisabled` in `tests/BoxTests.cs` with:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL seeded history clears the cold start`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1218,13 +1218,13 @@ In `OnBar`, replace the cold-start block:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): cold start hard-disables the box engine and reports n/N boxes sealed
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): cold start hard-disables the box engine and reports n/N boxes sealed
 
 The validity gate has no denominator until boxes have sealed. v1 printed READY
 beside '(out of band)' and never connected them; this states the warmup in the
@@ -1323,7 +1323,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `ArmingDoesNotSpendTheEdge();`):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL with `FAIL a close beyond the edge arms`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1475,13 +1475,13 @@ Replace the tail of `OnBar` (everything from the `!box.Valid` check's closing br
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): §6.2 arming — arms per edge per box id, not a boolean latch
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): §6.2 arming — arms per edge per box id, not a boolean latch
 
 v1 set a latch on arm, so an expired, cancelled or refused trigger burned the
 box without a trade (B3). Here the edge carries BoxArmsPerEdge attempts, counted
@@ -1631,7 +1631,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `CooldownAndArmCapAcrossExpiries();` a
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: FAIL — build error `error CS1061: 'BbEngine' does not contain a definition for 'OnTriggerExpired'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1690,13 +1690,13 @@ Add `AgeTrigger` next to `Arm`, and the two public callbacks next to `OnEntryFil
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): one engine-owned trigger clock — expiry spends an arm, a refusal refunds it
+cd "<repo>" && git add ninjascript/BreakBoxCore.cs tests/BoxTests.cs && git commit -m "feat(core): one engine-owned trigger clock — expiry spends an arm, a refusal refunds it
 
 v1 counted BreakArmedBars from the arm and _entryBarsWaiting from the submit, and
 neither cancelled the other's object (B6). The engine now owns the only clock and
@@ -1759,7 +1759,7 @@ Add to `tests/BoxTests.cs` (`Run()` gains `SecondsScaleToBars();`):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"; grep -c "BoxLookbackSec\|BoxMaxAgeSec\|BoxArmCooldownSec" ninjascript/BreakBoxStrategy.cs`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"; grep -c "BoxLookbackSec\|BoxMaxAgeSec\|BoxArmCooldownSec" ninjascript/BreakBoxStrategy.cs`
 Expected: `ALL PASS` from the runner and `0` from the grep. The arithmetic is Phase 1's and already correct — what is missing is the SURFACE: after Task 40 the box engine runs entirely on `BbConfig`'s C# defaults, so the user has no box dials at all and the same hardcoded bar counts mean 3.5 minutes on a 30s chart and 7 on a 1m one. That grep returning 0 is this task's red.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1867,13 +1867,13 @@ Properties, replacing `:856-866` (keep `SessionOpenHhmm`):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && scripts/check.sh && grep -c "BbScale.Bars" ninjascript/BreakBoxStrategy.cs`
+Run: `cd "<repo>" && scripts/check.sh && grep -c "BbScale.Bars" ninjascript/BreakBoxStrategy.cs`
 Expected: PASS — `ALL PASS (…)`, `compiles clean` from `nt8c`, and the grep counts every horizon dial that had to be converted (3 for the box, plus whatever Phase 1 and the cloud already convert)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript tests && git commit -m "feat(strategy): §6.3 box parameter surface in SECONDS, converted in BuildConfigs
+cd "<repo>" && git add ninjascript tests && git commit -m "feat(strategy): §6.3 box parameter surface in SECONDS, converted in BuildConfigs
 
 No horizon is expressed in bars on the property surface. The conversion runs
 inside BuildConfigs, not once at DataLoaded, because every panel toggle rebuilds
@@ -1908,12 +1908,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 No new assert. The invariant is structural — "no refusal path drops the token on the floor" — and the half this task owns is that both routers actually reach the box engine:
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -n "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs; grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs
+cd "<repo>" && grep -n "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs; grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs; scripts/check.sh 2>&1 | tail -3`
+Run: `cd "<repo>" && grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs; scripts/check.sh 2>&1 | tail -3`
 Expected: FAIL — the count is under 2, and `nt8c` is red on the router: the callbacks it named belonged to the engine Task 40 deleted. Any count below 2 means a box refusal or a box expiry stops at the `Cloud` check and the arm is never returned (B4).
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1940,13 +1940,13 @@ The two routers Task 7 added — give each its box arm. Nothing else in the file
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && scripts/check.sh && grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs`
+Run: `cd "<repo>" && scripts/check.sh && grep -c "_engine.OnEntryRejected\|_engine.OnTriggerExpired" ninjascript/BreakBoxStrategy.cs`
 Expected: PASS — `ALL PASS (…)` from the runner, `compiles clean` from `nt8c`, and `2` from the grep
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript && git commit -m "fix(strategy): route box refusals and expiries to the v2 engine (B4)
+cd "<repo>" && git add ninjascript && git commit -m "fix(strategy): route box refusals and expiries to the v2 engine (B4)
 
 Task 7 built the shell's refusal plumbing and both routers; the rewrite in this
 phase replaced the engine underneath them. The routers now call the v2 engine's

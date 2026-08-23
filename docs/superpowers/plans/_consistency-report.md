@@ -169,8 +169,8 @@ T28's copy list is `BreakBoxTypes, BreakBoxCore, BreakBoxCloud, BreakBoxStrategy
 T63 names the file with `Instrument.FullName` → `BbHistory.FileName("MNQ 09-26", "Sim101")` → `history-MNQ_09-26-Sim101.jsonl` (pinned by T62's assert). T86 globs `"history-" + Instrument.MasterInstrument.Name + "-*.jsonl"` → `history-MNQ-*.jsonl`, which does not match. Every marker silently absent, and T87's step-4 check #5 ("gold bars vs blue arrows") reads as "the strategy took no trades".
 **Fix:** T86's pattern becomes `"history-" + Instrument.FullName.Replace(' ', '_') + "-*.jsonl"`.
 
-**33. Deploy paths disagree.** T28 uses `/mnt/c/Users/$USER/Documents/NinjaTrader 8/...`; T87 hardcodes `/mnt/c/Users/javlo/...`. `$USER` under WSL is the Linux user, not the Windows one.
-**Fix:** both use the same literal Windows path (`/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom`).
+**33. Deploy paths disagree.** T28 uses `/mnt/c/Users/$USER/Documents/NinjaTrader 8/...`; T87 hardcodes `<Documents>/../...`. `$USER` under WSL is the Linux user, not the Windows one.
+**Fix:** both use the same literal Windows path (`<Documents>/NinjaTrader 8/bin/Custom`).
 
 ---
 

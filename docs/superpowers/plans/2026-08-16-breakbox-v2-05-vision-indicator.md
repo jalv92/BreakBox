@@ -16,7 +16,7 @@
 The gate for an NT8 file is `scripts/check.sh`. Put Vision in it first, so the gate fails until the file exists:
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" \
+cd "<repo>" \
   && sed -i 's/^FILES=(\(.*\))$/FILES=(\1 BreakBoxVision)/' scripts/check.sh \
   && sed -i 's/all five files/all NT8 files/g; s/All five files/All NT8 files/g' scripts/check.sh \
   && grep -n '^FILES=' scripts/check.sh
@@ -24,8 +24,8 @@ cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" \
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -3`
-Expected: FAIL with `grep: /home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxVision.cs: No such file or directory`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -3`
+Expected: FAIL with `grep: <repo>/ninjascript/BreakBoxVision.cs: No such file or directory`
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -322,13 +322,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -4`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -4`
 Expected: `ALL PASS (<n> checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs scripts/check.sh && git commit -m "feat(vision): BreakBoxVision skeleton — ribbon/trend plots on the engine's own EMAs
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs scripts/check.sh && git commit -m "feat(vision): BreakBoxVision skeleton — ribbon/trend plots on the engine's own EMAs
 
 Indicator, trades nothing. Its own parameters, converted through the SAME
 BbScale the strategy uses, and BreakBoxCore.Ema/WilderAtr rather than NT8's
@@ -352,12 +352,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -c "_cloud.OnBar" ninjascript/BreakBoxVision.cs`
+Run: `cd "<repo>" && grep -c "_cloud.OnBar" ninjascript/BreakBoxVision.cs`
 Expected: `0` — Vision draws EMAs but runs no engine, so nothing on the chart can disagree with the strategy yet.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "_cloud.OnBar" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
+Run: `cd "<repo>" && grep -q "_cloud.OnBar" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
 Expected: `ABSENT`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -402,13 +402,13 @@ In `OnBarUpdate`, after the three `Values[...][0] = ...` assignments:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "_cloud.OnBar" ninjascript/BreakBoxVision.cs && bash scripts/check.sh 2>&1 | tail -3`
+Run: `cd "<repo>" && grep -q "_cloud.OnBar" ninjascript/BreakBoxVision.cs && bash scripts/check.sh 2>&1 | tail -3`
 Expected: `ALL PASS (<n> checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): run the cloud engine from Vision's own BbCloudState
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): run the cloud engine from Vision's own BbCloudState
 
 canTrade always true, positioned always false, every trigger treated as
 filled: a calibration view counts what the model sees, not what a governor
@@ -431,12 +431,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "Draw.Region" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
+Run: `cd "<repo>" && grep -q "Draw.Region" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
 Expected: `ABSENT` — the two ribbon lines are drawn but the space between them is empty, which is the single most visible difference from the reference frames.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -c "Draw.Region\|PaintCloud" ninjascript/BreakBoxVision.cs`
+Run: `cd "<repo>" && grep -c "Draw.Region\|PaintCloud" ninjascript/BreakBoxVision.cs`
 Expected: `0`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -519,13 +519,13 @@ In `OnBarUpdate`, after the `if (_lastAction.Fire) _cloud.OnEntryFilled();` bloc
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -3`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -3`
 Expected: `ALL PASS (<n> checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): draw the cloud as a regime-tinted region, one object per regime run
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): draw the cloud as a regime-tinted region, one object per regime run
 
 Tinted by the LATCHED regime: the instantaneous one zeroes on exactly the
 pullbacks the engine is waiting for and would strobe grey on every setup.
@@ -547,12 +547,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "BarBrushes" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
+Run: `cd "<repo>" && grep -q "BarBrushes" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
 Expected: `ABSENT` — and confirm nobody else owns them: `grep -rn "BarBrushes" ninjascript/` must print nothing at all.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -rn "BarBrushes" ninjascript/ | wc -l`
+Run: `cd "<repo>" && grep -rn "BarBrushes" ninjascript/ | wc -l`
 Expected: `0`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -619,13 +619,13 @@ In `OnBarUpdate`, replace the single `PaintCloud();` line with:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -3 && grep -rln "BarBrushes" ninjascript/`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -3 && grep -rln "BarBrushes" ninjascript/`
 Expected: `compiles clean`, and the grep lists `ninjascript/BreakBoxVision.cs` and nothing else
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): gold / dim-gold signal candles, Vision the sole owner of BarBrushes
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): gold / dim-gold signal candles, Vision the sole owner of BarBrushes
 
 Gold = the engine fired. Dim gold = bar gates b/c/d passed and context did
 not, recomputed locally from the SHARED BbMath.CloseInRange so the painted
@@ -651,12 +651,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "PaintBox" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
+Run: `cd "<repo>" && grep -q "PaintBox" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
 Expected: `ABSENT` — the micro-accumulation rectangle is the object the reference actually trades (spec §1) and the chart does not show it yet.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -c "BbEngine\|PaintBox" ninjascript/BreakBoxVision.cs`
+Run: `cd "<repo>" && grep -c "BbEngine\|PaintBox" ninjascript/BreakBoxVision.cs`
 Expected: `0`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -830,13 +830,13 @@ And their defaults, in `State.SetDefaults` after `AtrPeriod = 14;`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -3`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -3`
 Expected: `ALL PASS (<n> checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): sealed accumulation boxes as white rectangles
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): sealed accumulation boxes as white rectangles
 
 Both engines run unconditionally — §4.1 arbitration belongs to the strategy,
 and a view that hid the box would hide the trades being accounted for.
@@ -858,12 +858,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -q "BbHistory.TryParse" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
+Run: `cd "<repo>" && grep -q "BbHistory.TryParse" ninjascript/BreakBoxVision.cs && echo PRESENT || echo ABSENT`
 Expected: `ABSENT` — the chart shows the model but not a single trade the strategy actually took, which is half of the side-by-side comparison Task 87 depends on.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && grep -c "ArrowUp\|ArrowDown" ninjascript/BreakBoxVision.cs`
+Run: `cd "<repo>" && grep -c "ArrowUp\|ArrowDown" ninjascript/BreakBoxVision.cs`
 Expected: `0`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -982,13 +982,13 @@ and after `PaintBox();`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -3`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -3`
 Expected: `ALL PASS (<n> checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): entry/exit markers read from the history JSONL
+cd "<repo>" && git add ninjascript/BreakBoxVision.cs && git commit -m "feat(vision): entry/exit markers read from the history JSONL
 
 Blue up-arrows on entries, magenta down-arrows on exits (§2.2), from the
 file rather than from execution events — so the view works on a chart with
@@ -1002,7 +1002,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 87: deploy to NT8 and calibrate against `reference/` — the afternoon that answers *"no se parece en nada"*
 
 **Files:**
-- Deploy: `ninjascript/BreakBoxVision.cs` → `/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs` (the `namespace ...Indicators` decides the folder, not the role)
+- Deploy: `ninjascript/BreakBoxVision.cs` → `<Documents>/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs` (the `namespace ...Indicators` decides the folder, not the role)
 - Read: `projects/Trading/BreakBox/reference/WhatsApp Image 2026-08-16 at 16.40.50*.jpeg` (4 frames)
 
 **Interfaces:**
@@ -1014,18 +1014,18 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 A NinjaScript task is not done until the file is in `Custom/`. `nt8c` clean is not done, committed is not done.
 
 ```bash
-cp "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxVision.cs" \
-   "/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs"
+cp "<repo>/ninjascript/BreakBoxVision.cs" \
+   "<Documents>/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs"
 ```
 
 - [ ] **Step 2: The two post-deploy checks**
 
 ```bash
-find "/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Indicators" \
-     "/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Strategies" \
+find "<Documents>/NinjaTrader 8/bin/Custom/Indicators" \
+     "<Documents>/NinjaTrader 8/bin/Custom/Strategies" \
      -name "BreakBox*.cs" -printf "%f\n" | sort | uniq -d
-cmp "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxVision.cs" \
-    "/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs"
+cmp "<repo>/ninjascript/BreakBoxVision.cs" \
+    "<Documents>/NinjaTrader 8/bin/Custom/Indicators/BreakBoxVision.cs"
 ```
 
 Expected: the `uniq -d` prints NOTHING (a duplicate basename across `Indicators/` and `Strategies/` makes NT8 throw a CS0101 cascade on F5, and the staged nt8c build cannot see it), and `cmp` is silent.

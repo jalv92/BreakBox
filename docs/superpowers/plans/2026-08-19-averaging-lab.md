@@ -1489,7 +1489,7 @@ git commit -m "feat(averaging): JSONL telemetry, teardown, grid visuals, honest-
 ### Task 7: Deploy to NT8 and close out
 
 **Files:**
-- Copy: `ninjascript/AveragingEngineCore.cs`, `ninjascript/BreakBoxStrategy.cs` → `/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Strategies/`
+- Copy: `ninjascript/AveragingEngineCore.cs`, `ninjascript/BreakBoxStrategy.cs` → `<Documents>/NinjaTrader 8/bin/Custom/Strategies/`
 
 - [ ] **Step 1: Final gates**
 
@@ -1498,7 +1498,7 @@ Run: `scripts/check.sh` && `dotnet run --project tests` — both green.
 - [ ] **Step 2: Deploy (house rule: a task is not done until the .cs is in Custom)**
 
 ```bash
-DEST="/mnt/c/Users/javlo/Documents/NinjaTrader 8/bin/Custom/Strategies"
+DEST="<Documents>/NinjaTrader 8/bin/Custom/Strategies"
 cp ninjascript/AveragingEngineCore.cs "$DEST/"
 cp ninjascript/BreakBoxStrategy.cs "$DEST/"
 cmp ninjascript/AveragingEngineCore.cs "$DEST/AveragingEngineCore.cs" && echo OK-core

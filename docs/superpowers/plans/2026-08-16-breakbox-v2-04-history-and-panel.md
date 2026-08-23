@@ -119,7 +119,7 @@ FILES=(BreakBoxTypes BreakBoxCore BreakBoxExits BreakBoxHistory BreakBoxStrategy
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0103: The name 'BbHistory' does not exist in the current context`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -275,13 +275,13 @@ namespace BreakBoxCore
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS — `ALL PASS (n checks)`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxHistory.cs tests/HistoryTests.cs tests/Program.cs tests/BreakBox.Tests.csproj scripts/check.sh && \
 git commit -m "feat(history): BbTradeRecord + hand-rolled JSONL round trip
 
@@ -359,7 +359,7 @@ Add to `tests/HistoryTests.cs` — one new method, and its call in `Run()`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0117: 'BbHistory' does not contain a definition for 'CumulativeEquity'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -436,13 +436,13 @@ Append inside `BbHistory` in `ninjascript/BreakBoxHistory.cs`, before the privat
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxHistory.cs tests/HistoryTests.cs && \
 git commit -m "feat(history): cumulative equity + config digest, risk excluded
 
@@ -510,7 +510,7 @@ Add to `tests/HistoryTests.cs`, plus its call in `Run()`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0117: 'BbHistory' does not contain a definition for 'ShouldWrite'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -553,13 +553,13 @@ Append inside `BbHistory` in `ninjascript/BreakBoxHistory.cs`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|ALL PASS"`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxHistory.cs tests/HistoryTests.cs && \
 git commit -m "feat(history): the write guard, with the assert that justifies it
 
@@ -612,7 +612,7 @@ And in `WentFlat`, immediately after the `pnl` computation (`:635-636`):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
 Expected: FAIL with `error CS0103: The name 'OpenHistory' does not exist in the current context` (and the same for `AppendHistory`, `_cfgHash`)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -747,13 +747,13 @@ And at the end of `WentFlat`, before `CheckDailyLimits();`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `ALL PASS (n checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxStrategy.cs && \
 git commit -m "feat(history): journal every closed trade from the shell
 
@@ -849,7 +849,7 @@ Replace `BuildPanel` (`:57-200`) and `DisposePanel` (`:202-212`) in `ninjascript
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
 Expected: FAIL with `error CS0103: The name 'PanelWidth' does not exist in the current context` (and the same for `BuildHeader`, `BuildActionBar`)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1083,13 +1083,13 @@ Replace the `Widgets` region (`:216-283`) — `Row()` goes, the grid helpers arr
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxPanel.cs && \
 git commit -m "refactor(panel): 300 DIP DockPanel docked left, fixed header + action bar
 
@@ -1153,7 +1153,7 @@ Add to `tests/HistoryTests.cs`, plus its call in `Run()`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0117: 'BbGateReport' does not contain a definition for 'RowState'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1262,13 +1262,13 @@ And add it to the body in `BuildPanel`, right after `_body` is created:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `ALL PASS (n checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxTypes.cs ninjascript/BreakBoxPanel.cs tests/HistoryTests.cs && \
 git commit -m "feat(panel): the WHY NO TRADE gate ladder
 
@@ -1341,7 +1341,7 @@ Add to `tests/HistoryTests.cs`, plus its call in `Run()`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0246: The type or namespace name 'BbLogRing' could not be found`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1443,13 +1443,13 @@ And add the section to `BuildPanel`'s body, after the gate section:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `ALL PASS (n checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxHistory.cs ninjascript/BreakBoxPanel.cs tests/HistoryTests.cs && \
 git commit -m "feat(panel): engine log ring, newest first and de-duplicated
 
@@ -1483,7 +1483,7 @@ Add the two sections to `BuildPanel`'s body list, after the log section:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
 Expected: FAIL with `error CS0103: The name 'BuildControlsSection' does not exist in the current context`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1609,13 +1609,13 @@ Add to `#region Panel actions (strategy thread)`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxPanel.cs && \
 git commit -m "fix(panel): route config rebuilds through TriggerCustomEvent (B5)
 
@@ -1700,7 +1700,7 @@ Add to `tests/HistoryTests.cs`, plus its call in `Run()`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "error CS|FAIL|ALL PASS"`
 Expected: FAIL with `error CS0117: 'BbHistory' does not contain a definition for 'View'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1919,13 +1919,13 @@ And add it to `BuildPanel`'s body, last:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -5`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -5`
 Expected: PASS — `ALL PASS (n checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxHistory.cs ninjascript/BreakBoxPanel.cs tests/HistoryTests.cs && \
 git commit -m "feat(panel): history chart — Polyline + Polygon on a dashed zero
 
@@ -2017,7 +2017,7 @@ And drop the now-dead HUD calls from `OnBarUpdate` in `ninjascript/BreakBoxStrat
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | grep -E "error CS|compiles clean"`
 Expected: FAIL with `error CS0103: The name 'FillStatus' does not exist in the current context` (and `FillGates`, `FillHistory`, `ApplySnap`, plus `UpdateHud` no longer defined)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2313,13 +2313,13 @@ using System.Collections.Generic;
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -6`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -6`
 Expected: PASS — `ALL PASS (n checks)` then `compiles clean`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 git add ninjascript/BreakBoxPanel.cs ninjascript/BreakBoxStrategy.cs && \
 git commit -m "feat(panel): one batched snapshot per bar drives the whole panel
 

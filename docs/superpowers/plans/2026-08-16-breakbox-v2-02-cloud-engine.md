@@ -3,11 +3,11 @@
 ### Task 20: `BbCloudConfig` + `BbCloudState` + the `BbCloud` skeleton (step 0 and step 1)
 
 **Files:**
-- Create `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxCloud.cs` (new, pure — zero `using NinjaTrader.*`, `namespace BreakBoxCore`, C# 7.3)
-- Create `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/CloudTests.cs` (new)
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/BreakBox.Tests.csproj` — insert a `<Compile>` after line 10 (`BreakBoxTypes.cs`; verified 2026-08-16)
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/Program.cs` — register the suite next to `BoxTests.Run();` (line 47 today; Phase 1 registers its own suites in the same block first, so append after the last `*.Run();`)
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/scripts/check.sh` line 28 — the `FILES=(...)` array must list `BreakBoxCloud`, or the NT8 compilation unit never sees the file
+- Create `<repo>/ninjascript/BreakBoxCloud.cs` (new, pure — zero `using NinjaTrader.*`, `namespace BreakBoxCore`, C# 7.3)
+- Create `<repo>/tests/CloudTests.cs` (new)
+- Modify `<repo>/tests/BreakBox.Tests.csproj` — insert a `<Compile>` after line 10 (`BreakBoxTypes.cs`; verified 2026-08-16)
+- Modify `<repo>/tests/Program.cs` — register the suite next to `BoxTests.Run();` (line 47 today; Phase 1 registers its own suites in the same block first, so append after the last `*.Run();`)
+- Modify `<repo>/scripts/check.sh` line 28 — the `FILES=(...)` array must list `BreakBoxCloud`, or the NT8 compilation unit never sees the file
 
 **Interfaces:**
 
@@ -155,7 +155,7 @@ FILES=(BreakBoxTypes BreakBoxCloud BreakBoxCore BreakBoxExits BreakBoxStrategy B
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 Expected: compile failure, `error CS0246: The type or namespace name 'BbCloudConfig' could not be found` (and the same for `BbCloudState`, `BbCloud`).
@@ -336,13 +336,13 @@ namespace BreakBoxCore
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs tests/Program.cs tests/BreakBox.Tests.csproj scripts/check.sh && git commit -m "feat(cloud): BbCloudConfig/State + engine skeleton with the warmup gate
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs tests/Program.cs tests/BreakBox.Tests.csproj scripts/check.sh && git commit -m "feat(cloud): BbCloudConfig/State + engine skeleton with the warmup gate
 
 Config carries §5.4 as bar counts; the constructor owns the slope ring size.
 The eT push happens before the warmup return — gating it behind the gate is a
@@ -357,8 +357,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 21: the slope buffer and the LATCHED regime (§5.2 step 2)
 
 **Files:**
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxCloud.cs` — insert step 2 after the `_st.Gate.Clear();` written in Task 20
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/CloudTests.cs` — four new cases
+- Modify `<repo>/ninjascript/BreakBoxCloud.cs` — insert step 2 after the `_st.Gate.Clear();` written in Task 20
+- Modify `<repo>/tests/CloudTests.cs` — four new cases
 
 **Interfaces:**
 
@@ -474,7 +474,7 @@ private void ClearRegime();
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 Expected: `FAIL a clean uptrend latches long (0 vs 1)` — the skeleton never writes `RegimeLatched`.
@@ -540,13 +540,13 @@ Expected: `FAIL a clean uptrend latches long (0 vs 1)` — the skeleton never wr
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): latched regime with a lookback-normalised slope gate
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): latched regime with a lookback-normalised slope gate
 
 The latch is the fix for the design's worst first-draft defect: an instantaneous
 regime dies on the very pullback that mints the token, which is v1's zero-trade
@@ -561,8 +561,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 22: the pullback token — mint, deepen, kill (§5.2 steps 3 and 4)
 
 **Files:**
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxCloud.cs` — steps 3/4 after the regime gate; `UpdateRegime` gains the flip-kill
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/CloudTests.cs`
+- Modify `<repo>/ninjascript/BreakBoxCloud.cs` — steps 3/4 after the regime gate; `UpdateRegime` gains the flip-kill
+- Modify `<repo>/tests/CloudTests.cs`
 
 **Interfaces:**
 
@@ -669,7 +669,7 @@ private void KillToken(string why);   // Armed=false, Ext=NaN, AgeBars=0, Trigge
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 Expected: `FAIL a touch of the FAR edge mints the token` — nothing writes `Armed` yet.
@@ -771,13 +771,13 @@ In `UpdateRegime`, the flip must kill before the latch is overwritten, and `Clea
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the pullback token — mint on a far-edge touch, deepen, kill
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the pullback token — mint on a far-edge touch, deepen, kill
 
 The else-if is pinned by three asserts: the touch bar has AgeBars==0 so it can
 never fire, ext is assigned rather than min()-ed into a dead token's value, and
@@ -792,9 +792,9 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 23: token restore on expiry and rejection (§5.2 steps 7 and 9)
 
 **Files:**
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxCloud.cs` — three public callbacks + `RestoreToken`
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/tests/CloudTests.cs`
-- Modify `/home/javlo/Code Projects/main-project/projects/Trading/BreakBox/ninjascript/BreakBoxStrategy.cs` — point the existing router at the cloud engine. `OnEntryRejected(BbEntryEngine, string)` and `_owningEngine` are **written and declared by Phase 1 Task 7**: re-read that method before editing and fill only its `Cloud` arm. The expiry site is the working-entry ager (`AgeWorkingEntry`, Strategy.cs:393-394 calls it in v1 — re-verify, Phase 1 moved code around it)
+- Modify `<repo>/ninjascript/BreakBoxCloud.cs` — three public callbacks + `RestoreToken`
+- Modify `<repo>/tests/CloudTests.cs`
+- Modify `<repo>/ninjascript/BreakBoxStrategy.cs` — point the existing router at the cloud engine. `OnEntryRejected(BbEntryEngine, string)` and `_owningEngine` are **written and declared by Phase 1 Task 7**: re-read that method before editing and fill only its `Cloud` arm. The expiry site is the working-entry ager (`AgeWorkingEntry`, Strategy.cs:393-394 calls it in v1 — re-verify, Phase 1 moved code around it)
 
 **Interfaces:**
 
@@ -877,7 +877,7 @@ public void OnTriggerExpired();              // RESTORES
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests
+cd "<repo>" && dotnet run --project tests
 ```
 
 Expected: compile failure, `error CS1061: 'BbCloud' does not contain a definition for 'OnTriggerExpired'`.
@@ -955,13 +955,13 @@ Shell wiring — fill in the two Cloud arms Phase 1 Task 7 left (re-read the sur
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests && scripts/check.sh
+cd "<repo>" && dotnet run --project tests && scripts/check.sh
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs ninjascript/BreakBoxStrategy.cs tests/CloudTests.cs && git commit -m "feat(cloud): expiry and rejection restore the token instead of burning it
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs ninjascript/BreakBoxStrategy.cs tests/CloudTests.cs && git commit -m "feat(cloud): expiry and rejection restore the token instead of burning it
 
 v1 spent the edge the moment a trigger armed, so an expired, cancelled or
 refused entry cost a trade that never happened — defect B3, now closed on the
@@ -1158,7 +1158,7 @@ Append to `tests/CloudTests.cs` (and add `GoldCandleGatesLong();` and `GoldCandl
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|FAILURES"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|FAILURES"`
 
 Expected: FAIL — the step-5 placeholder never fires and never writes the ladder, so at minimum:
 ```
@@ -1272,14 +1272,14 @@ and add, as private members of `BbCloud`:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 
 Expected: PASS — `ALL PASS (n checks)` from the runner and `compiles clean` from nt8c.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the five gold-candle gates, written and tested in both directions
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the five gold-candle gates, written and tested in both directions
 
 Reclaim, direction, close-in-range, bar range and leg, at ladder depths 7-11 so
 the panel can name the ONE gate that refused. Close-in-range routes through
@@ -1423,7 +1423,7 @@ Append to `tests/CloudTests.cs` (and add `TriggerAndTokenOwnership();` and `CanT
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && dotnet run --project tests 2>&1 | grep -E "FAIL|FAILURES"`
+Run: `cd "<repo>" && dotnet run --project tests 2>&1 | grep -E "FAIL|FAILURES"`
 
 Expected: FAIL — Task 24 left `TriggerPx` at 0 and wrote no suppression gates:
 ```
@@ -1536,14 +1536,14 @@ and `OnEntryFilled()` becomes the one place that consumes:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 
 Expected: PASS — `ALL PASS (n checks)` from the runner and `compiles clean` from nt8c.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the trigger, and the rule that only a FILL spends the token
+cd "<repo>" && git add ninjascript/BreakBoxCloud.cs tests/CloudTests.cs && git commit -m "feat(cloud): the trigger, and the rule that only a FILL spends the token
 
 TriggerPx is a stop one tick beyond the signal bar's extreme, the signal bar
 feeds the Candle stop, and the box fields are zeroed because §4.1 forbids the
@@ -1588,7 +1588,7 @@ The consumer that names what does not exist yet. In `OnBarUpdate`, after `_e50.U
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 
 Expected: FAIL with
 ```
@@ -1767,7 +1767,7 @@ Properties, after `RetraceOffsetTicks` (`:920-922`):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 
 Expected: PASS — `ALL PASS (n checks)` from the runner and `compiles clean` from nt8c.
 Conformance grep, expected to print nothing (no horizon on the cloud surface is a bar count):
@@ -1776,7 +1776,7 @@ Conformance grep, expected to print nothing (no horizon on the cloud surface is 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxStrategy.cs && git commit -m "feat(shell): the cloud engine's fields, its seconds-only dial surface, and the ribbon
+cd "<repo>" && git add ninjascript/BreakBoxStrategy.cs && git commit -m "feat(shell): the cloud engine's fields, its seconds-only dial surface, and the ribbon
 
 Fourteen dials, not one of them a bar count (§8). BuildConfigs converts them
 through BbScale.Bars with the cached _barSec, and it REFILLS the same config
@@ -1843,7 +1843,7 @@ Replace `BreakBoxStrategy.cs:385-394` (from `bool canTrade = ...` through the `e
 
 - [ ] **Step 2: Run the gate to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 Expected: PASS at this point (nothing undeclared yet) — the failure arrives in Step 4, once `SubmitEntry` names `_owningEngine`. Run it anyway to confirm the arbitration itself compiles before touching the order path.
 
 - [ ] **Step 3: Record the owner on submit, and refuse through the callback**
@@ -1879,7 +1879,7 @@ and inside the "written BEFORE the submit" block at `:479-483`:
 
 - [ ] **Step 4: Run the gate to verify it fails**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 Expected: FAIL with `error CS0103: The name '_owningEngine' does not exist in the current context` and `error CS1501: No overload for method 'OnEntryRejected' takes 2 arguments`
 
 - [ ] **Step 5: Declare the owner and the router**
@@ -1973,13 +1973,13 @@ Replace `AgeWorkingEntry` and the head of `CancelWorkingEntry` (`:506-524`):
 
 - [ ] **Step 8: Run the gate to verify it passes**
 
-Run: `cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && bash scripts/check.sh 2>&1 | tail -20`
+Run: `cd "<repo>" && bash scripts/check.sh 2>&1 | tail -20`
 Expected: PASS — `ALL PASS` from the runner and `compiles clean` from nt8c
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git add ninjascript/BreakBoxStrategy.cs && git commit -m "feat(shell): §4.1 engine arbitration — Cloud first, one owner, one trigger clock
+cd "<repo>" && git add ninjascript/BreakBoxStrategy.cs && git commit -m "feat(shell): §4.1 engine arbitration — Cloud first, one owner, one trigger clock
 
 Cloud is evaluated before Box and the first Fire wins. _owningEngine is written
 before the submit (the order-event race) and every refusal path — qty<1, a
@@ -2013,7 +2013,7 @@ Expected: the four v1 files under `Strategies/`, nothing under `Indicators/`. A 
 - [ ] **Step 2: Copy — a real copy, never a symlink**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 NT="/mnt/c/Users/$USER/Documents/NinjaTrader 8/bin/Custom/Strategies" && \
 cp ninjascript/BreakBoxTypes.cs ninjascript/BreakBoxCore.cs ninjascript/BreakBoxCloud.cs ninjascript/BreakBoxStrategy.cs "$NT/"
 ```
@@ -2021,7 +2021,7 @@ cp ninjascript/BreakBoxTypes.cs ninjascript/BreakBoxCore.cs ninjascript/BreakBox
 - [ ] **Step 3: Verify byte-for-byte**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && \
+cd "<repo>" && \
 NT="/mnt/c/Users/$USER/Documents/NinjaTrader 8/bin/Custom/Strategies" && \
 for f in BreakBoxTypes BreakBoxCore BreakBoxCloud BreakBoxStrategy; do cmp "ninjascript/$f.cs" "$NT/$f.cs" && echo "OK $f"; done
 ```
@@ -2034,6 +2034,6 @@ Tell Javier: F5 in the NinjaScript Editor, then attach to an **MNQ 30s** chart o
 - [ ] **Step 5: Commit (nothing to commit — verify the tree is clean)**
 
 ```bash
-cd "/home/javlo/Code Projects/main-project/projects/Trading/BreakBox" && git status --short
+cd "<repo>" && git status --short
 ```
 Expected: empty. The deploy copies out of the repo and writes nothing back into it.
