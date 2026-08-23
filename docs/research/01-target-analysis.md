@@ -67,8 +67,16 @@ We are rebuilding **observed behaviour**, not their code.
 **Not allowed, and we will not do it:**
 - Decompiling, disassembling or unpacking their DLL / protected assembly.
 - Circumventing their licensing.
-- Reusing their names, branding, order-prefixes (`A_`, `B_`) or marketing copy.
-- Publishing this repo publicly. **The repo is private** (`jalv92/BreakBox`).
+- Reusing their names, branding, real order-prefixes or marketing copy. (Their two real
+  prefixes are referred to here only as `A_` and `B_`.)
+- Redistributing their product imagery. The four source screenshots are **not** in this
+  repository and never were part of what was published — only our measurement of them.
+
+**On publication.** This repository was private while it held those screenshots. It was
+made public on 2026-08-22, after they were removed from the working tree and from every
+commit, the vendor's name and branding were stripped throughout, and the licence was set
+to MIT. What is published is original NinjaScript plus our own measurements. Nothing here
+came from their binary.
 
 This is clean-room reimplementation from black-box observation, which is the legitimate
 form of reverse engineering. The line we do not cross is their binary.
@@ -318,20 +326,17 @@ whether the box signal survives. Layer 4 is where the actual intellectual value 
 
 ---
 
-## 8. Open questions for Javier
+## 8. What this document does not settle
 
-1. **Scope.** Full shell (layers 0–5, a real product-grade rebuild) or just the box signal
-   to test whether the edge exists at all (layer 3 + minimal bracket)? Recommendation:
-   **layer 3 + layer 0 first** — prove the edge before building the cockpit around it.
-2. **Instrument/timeframe.** Their demo is MNQ. Our NQ tooling and data (PropSim,
-   `[[nq-continuous-dataset]]`) are the deepest. Default to NQ/MNQ unless told otherwise.
-3. **Did you buy it?** If there is legitimate access to the running product, we can
-   observe far more behaviour (settings dialog, Strategy Explorer, actual parameter names)
-   without touching the binary. That would sharpen the spec enormously. If not, this
-   document is the ceiling of what observation gives us.
-4. **Reuse.** `PatternZone`, `VeeSnap` and `LatigoBreak` already contain bracket, ATM and
-   PropSim-mirror machinery. Layer 0 should be lifted from the best of those rather than
-   written fresh.
+1. **Scope.** Whether to rebuild the full shell or only the signal, to test whether the
+   edge exists at all. The recommendation at the time was signal-first: prove the edge
+   before building the cockpit around it. (In the end the shell was built too, and the
+   edge did not appear — see the README.)
+2. **Instrument.** Their demo is MNQ; the tooling and data here are deepest on NQ/MNQ.
+3. **The ceiling of observation.** Everything above was read off static images. A settings
+   dialog, the real parameter names, and the behaviour of features that never appear in a
+   screenshot are all outside what this method can reach. Where the images were ambiguous
+   the document says so rather than guessing.
 
 ---
 
