@@ -18,6 +18,44 @@ public static class ShellTests
         GateReport();
         EntryWindowAndBudget();
         StopSideOfMarket();
+        DayGovernor();
+    }
+
+    // The daily governor. Both comparisons are sign-sensitive against a dollar
+    // dial the user types as a POSITIVE number, and the failure mode is silent:
+    // a backwards test simply never fires and the limit looks like it is off.
+    private static void DayGovernor()
+    {
+        T.Section("Daily loss limit / profit target");
+
+        // Loss side. The dial is 450; the P&L that breaches it is -450.
+        T.Check(BbMath.DayGovernor(-449.99, 450, 0) == "", "one cent short of the loss limit keeps trading");
+        T.Check(BbMath.DayGovernor(-450.00, 450, 0) == "daily_loss", "exactly the loss limit locks out");
+        T.Check(BbMath.DayGovernor(-900.00, 450, 0) == "daily_loss", "past the loss limit locks out");
+        // The NinjaScriptProperty is Range(0, 1000000), so a negative dial cannot
+        // reach here from the UI; if one ever does it reads as OFF, not as a limit.
+        T.Check(BbMath.DayGovernor(-900.00, -450, 0) == "", "a negative dial is off, not a limit");
+
+        // Profit side.
+        T.Check(BbMath.DayGovernor(299.99, 0, 300) == "", "one cent short of the target keeps trading");
+        T.Check(BbMath.DayGovernor(300.00, 0, 300) == "daily_target", "exactly the target locks out");
+        T.Check(BbMath.DayGovernor(1000.00, 0, 300) == "daily_target", "past the target locks out");
+
+        // 0 = off, on each dial independently.
+        T.Check(BbMath.DayGovernor(-100000.0, 0, 300) == "", "loss dial at 0 is off");
+        T.Check(BbMath.DayGovernor(100000.0, 450, 0) == "", "profit dial at 0 is off");
+
+        // A profitable day never trips the loss dial, and vice versa. This is
+        // the pair a sign flip breaks.
+        T.Check(BbMath.DayGovernor(500.00, 450, 0) == "", "a +$500 day does not trip a $450 LOSS limit");
+        T.Check(BbMath.DayGovernor(-500.00, 0, 300) == "", "a -$500 day does not trip a $300 target");
+
+        // Loss wins the tie: it cannot be both, but if the dials are set so a
+        // single number satisfies both, stopping is the safe verdict.
+        T.Check(BbMath.DayGovernor(-450.00, 450, 1) == "daily_loss", "the loss limit is judged first");
+
+        // No day P&L yet is not a breach.
+        T.Check(BbMath.DayGovernor(double.NaN, 450, 300) == "", "an unknown day P&L locks nothing");
     }
 
     // The guard that stops NT8 rejecting our own entries. A stop entry is a

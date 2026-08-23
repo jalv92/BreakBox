@@ -895,6 +895,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             // A hand-pulled LOCK OUT is deliberately excluded: that latch means
             // "take no new trades", and flattening a runner the user chose to
             // keep would be a different button.
+            //
+            // ponytail: bar-close granularity — Calculate is OnBarClose, so a
+            // breach is caught within ONE bar (30s on the measured series) and
+            // the market can travel inside it. That is the same granularity the
+            // whole exit stack already runs at, so the limit is no looser than
+            // the stop next to it. If a hard tick-level cap is ever needed, add
+            // a 1-tick AddDataSeries and re-check there — NOT OnMarketData,
+            // which cannot submit orders without crashing NT8.
             CheckDailyLimits();
             if (_lockout && _lockoutWhy != "manual" && (_inTrade || _entryPending))
             {

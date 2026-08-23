@@ -189,9 +189,9 @@ namespace BreakBoxCore
         {
             if (double.IsNaN(dayPnl))
                 return "";
-            if (lossLimit > 0.0 && dayPnl <= -Math.Abs(lossLimit))
+            if (lossLimit > 0.0 && dayPnl <= -lossLimit)
                 return "daily_loss";
-            if (profitTarget > 0.0 && dayPnl >= Math.Abs(profitTarget))
+            if (profitTarget > 0.0 && dayPnl >= profitTarget)
                 return "daily_target";
             return "";
         }
