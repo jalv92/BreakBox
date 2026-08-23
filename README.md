@@ -167,10 +167,12 @@ slope buffer full and all three EMAs warm.
 
 ## The control panel
 
-<img src="docs/assets/panel.png" alt="The BreakBox on-chart panel: gate ladder, engine log, controls, session state and history" width="420" align="right">
-
 The panel is the point of this project. It answers one question continuously:
 **why is nothing happening?**
+
+<p align="center">
+  <img src="docs/assets/panel.png" alt="The BreakBox on-chart panel: gate ladder, engine log, controls, session state and history" width="380">
+</p>
 
 **The gate ladder** is evaluated top to bottom and stops at the first blocker.
 Everything below the blocker reads `not evaluated`, because it genuinely was
@@ -211,8 +213,6 @@ restart.
 **FLATTEN / BE / LOCK OUT** are manual overrides. `LOCK OUT` means *take no new
 trades*; it deliberately does **not** close a position you chose to keep.
 `MANUAL BUY` / `MANUAL SELL` open a trade with the full bracket attached.
-
-<br clear="right">
 
 ## How it decides
 
@@ -378,8 +378,6 @@ and on a 30-sec chart.
 
 ### 08. Averaging lab (SIM-ONLY)
 
-<img src="docs/assets/params-232.png" alt="Group 08 Averaging lab, plus the Data Series and Setup sections" width="49%" align="right">
-
 **This module refuses to arm on any account whose name does not start with
 `Sim` or `Playback`.** There is no override. On an unverifiable account it fails
 closed. In backtest and Market Replay it arms normally.
@@ -416,7 +414,9 @@ experiments — never pool them.**
 | **Commission RT ($/contract)** | 5.76 | Round-turn commission, netted out of the budget. **The default is the NQ number — on MNQ set it to about 1.34.** |
 | **Slippage reserve (ticks)** | 2 | Held back out of the budget for the full stack's stop. |
 
-<br clear="right">
+<p align="center">
+  <img src="docs/assets/params-232.png" alt="Group 08 Averaging lab, plus the Data Series and Setup sections" width="60%">
+</p>
 
 ---
 
