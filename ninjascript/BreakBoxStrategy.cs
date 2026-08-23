@@ -186,6 +186,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool _lockout;
         private string _lockoutWhy = "";
         private int _tradesToday, _winsToday, _lossesToday;
+        private int _tradesCounted;
         private double _dayPnl;
         private readonly List<double> _tradePnls = new List<double>();
 
@@ -886,6 +887,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                     AvgOnBar(bar, secs);
             }
 
+            // The daily governor, BEFORE the session window and before any
+            // signal work. A breach has to close what is open on the bar it
+            // happens — the lockout flag alone only stops the NEXT entry, which
+            // is why the limit appeared not to work while a trade was running.
+            //
+            // A hand-pulled LOCK OUT is deliberately excluded: that latch means
+            // "take no new trades", and flattening a runner the user chose to
+            // keep would be a different button.
+            CheckDailyLimits();
+            if (_lockout && _lockoutWhy != "manual" && (_inTrade || _entryPending))
+            {
+                FlattenAll(_lockoutWhy);
+                UpdatePanelStatus();
+                return;
+            }
+
             if (TimeToFlatten(secs))
             {
                 FlattenAll("session_window");
@@ -996,6 +1013,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _lossesToday = 0;
             _dayPnl = 0.0;
             _tradePnls.Clear();
+            _tradesCounted = SystemPerformance.AllTrades.Count;
 
             // §13 step 1 instrumentation resets alongside the daily counters
             // above, so a printed line describes ONE session.
@@ -1900,7 +1918,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // trade's record is indistinguishable from a real one.
             _exitReason = "";
 
-            CheckDailyLimits();
+            RecordClosedTrade();
         }
 
         #endregion
@@ -2251,26 +2269,49 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Governor
 
+        // Runs on EVERY bar close, and prices the OPEN position as well as the
+        // closed ones. Three things were wrong with the previous arrangement,
+        // and together they meant the dial did nothing a user could see:
+        //
+        //   - It was called from ONE place: the end of WentFlat. Between an
+        //     entry and its exit the day P&L stopped moving, so a runner could
+        //     lose any amount and no comparison was ever made against it.
+        //   - It summed realized P&L only. Even flat-to-flat, the number it
+        //     judged was blind to the position that produced the breach.
+        //   - Reading SystemPerformance from inside OnExecutionUpdate races the
+        //     platform's own bookkeeping: the trade that just closed is not
+        //     reliably in AllTrades yet, so the breach landed one trade LATE.
+        //
+        // Flat-to-flat this returns exactly the old number (open is 0 when
+        // flat), so nothing about a closed day's accounting changes.
         private void CheckDailyLimits()
         {
             double cum = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
             if (double.IsNaN(_dayStartCum))
                 _dayStartCum = cum;
-            _dayPnl = cum - _dayStartCum;
 
+            double open = Position.MarketPosition == MarketPosition.Flat
+                        ? 0.0
+                        : Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency, Close[0]);
+            _dayPnl = (cum - _dayStartCum) + open;
+
+            string why = BbMath.DayGovernor(_dayPnl, DailyLossLimit, DailyProfitTarget);
+            if (why.Length > 0)
+                Lockout(why);
+        }
+
+        // Per-trade bookkeeping for the panel. Split out of CheckDailyLimits
+        // because that one is now per-BAR and this has to stay per-TRADE.
+        private void RecordClosedTrade()
+        {
             int n = SystemPerformance.AllTrades.Count;
-            if (n > 0)
-            {
-                double last = SystemPerformance.AllTrades[n - 1].ProfitCurrency;
-                _tradePnls.Add(last);
-                if (last > 0) _winsToday++;
-                else if (last < 0) _lossesToday++;
-            }
-
-            if (DailyLossLimit > 0 && _dayPnl <= -Math.Abs(DailyLossLimit))
-                Lockout("daily_loss");
-            else if (DailyProfitTarget > 0 && _dayPnl >= Math.Abs(DailyProfitTarget))
-                Lockout("daily_target");
+            if (n <= 0 || n == _tradesCounted)
+                return;
+            _tradesCounted = n;
+            double last = SystemPerformance.AllTrades[n - 1].ProfitCurrency;
+            _tradePnls.Add(last);
+            if (last > 0) _winsToday++;
+            else if (last < 0) _lossesToday++;
         }
 
         private void Lockout(string why)

@@ -177,6 +177,25 @@ namespace BreakBoxCore
             return (triggerPx - sidePx) * dir <= 0.0;
         }
 
+        // The daily governor's verdict on a day P&L, as a lockout reason or "".
+        // It lives here, with asserts on it, because the two comparisons are
+        // sign-sensitive and a backwards one reads perfectly correct: the loss
+        // limit is a POSITIVE dollar figure that has to be compared against a
+        // NEGATIVE P&L, and the target a positive one against a positive P&L.
+        //
+        // dayPnl must already include the open position. A governor fed realized
+        // P&L only cannot see a losing runner at all — that was the v2 bug.
+        public static string DayGovernor(double dayPnl, double lossLimit, double profitTarget)
+        {
+            if (double.IsNaN(dayPnl))
+                return "";
+            if (lossLimit > 0.0 && dayPnl <= -Math.Abs(lossLimit))
+                return "daily_loss";
+            if (profitTarget > 0.0 && dayPnl >= Math.Abs(profitTarget))
+                return "daily_target";
+            return "";
+        }
+
         // Hand-rolled so every engine rounds identically, and so the test runner
         // rounds the way NT8 will. Instrument.MasterInstrument.RoundToTickSize
         // must NEVER touch a price computed here.
