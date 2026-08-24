@@ -402,6 +402,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AveragingNoAddsFinalMinutes = 15;
                 AveragingCommissionRt = 5.76;
                 AveragingSlippageReserveTicks = 2;
+                AveragingLiveAllowed = false;       // opt-in only; see the guard in TryArmAveraging
+                AveragingMaxStackContracts = 0;
             }
             else if (State == State.Configure)
             {
@@ -721,6 +723,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "avgcut=" + AveragingNoAddsFinalMinutes.ToString(CultureInfo.InvariantCulture),
                 "avgcomm=" + AveragingCommissionRt.ToString("0.##", CultureInfo.InvariantCulture),
                 "avgslip=" + AveragingSlippageReserveTicks.ToString(CultureInfo.InvariantCulture),
+                "avglive=" + (AveragingLiveAllowed ? "1" : "0"),
+                "avgcap=" + AveragingMaxStackContracts.ToString(CultureInfo.InvariantCulture),
 
                 "bar=" + BarSeconds().ToString(CultureInfo.InvariantCulture)
             }));
@@ -1370,25 +1374,59 @@ namespace NinjaTrader.NinjaScript.Strategies
             DrawLevels();
         }
 
+        // Sim, Playback and Backtest are the three account names NT8 gives an
+        // account that cannot lose real money. Anything else — including a
+        // null we could not read — is treated as live.
+        private bool IsSimLikeAccount()
+        {
+            if (Account == null || Account.Name == null)
+                return false;
+            return Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
+                || Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase)
+                || Account.Name.StartsWith("Backtest", StringComparison.OrdinalIgnoreCase);
+        }
+
         // Every reason NOT to average, checked in cheap-to-expensive order.
         // Returns null with `why` set, or an armed plan.
         private AvgPlan TryArmAveraging(double fillPx, int qty, out string why)
         {
-            // SIM-ONLY guard (spec §4): live accounts never arm, no override.
-            // Fails CLOSED on an unverifiable (null) Account — never treat
-            // "can't tell" as "safe to arm".
-            if (State == State.Realtime
-                && (Account == null
-                    || (!Account.Name.StartsWith("Sim", StringComparison.OrdinalIgnoreCase)
-                        && !Account.Name.StartsWith("Playback", StringComparison.OrdinalIgnoreCase))))
+            // The account guard (spec §4), checked in EVERY state. The old form
+            // tested `State == State.Realtime` first, so the HISTORICAL warm-up
+            // pass of a chart bound to a live account skipped it entirely: the
+            // grid armed on history, `_avgArmed` carried into real time, and
+            // nothing re-checks after arming. That is how 2026-08-24 reached a
+            // 28-lot MNQ stack on a funded account whose every exit order the
+            // prop then rejected. State is not the question — the ACCOUNT is.
+            //
+            // Fails CLOSED on an unverifiable (null) Account: "can't tell" is
+            // never "safe to arm". Backtest is allowed because the Strategy
+            // Analyzer's account is simulated by construction.
+            if (!AveragingLiveAllowed && !IsSimLikeAccount())
             {
                 if (!_avgSimBlockPrinted)
                 {
                     _avgSimBlockPrinted = true;
                     Print("BreakBox AVG: account '" + (Account != null ? Account.Name : "unknown account")
-                          + "' is not Sim/Playback — averaging lab is SIM-ONLY and stays OFF");
+                          + "' is not Sim/Playback/Backtest — averaging lab stays OFF"
+                          + " (08. Averaging lab > 'Allow on a LIVE account' is the deliberate override)");
                 }
                 why = "live_account";
+                return null;
+            }
+
+            // The contract ceiling. The budget solver reasons in DOLLARS and
+            // cannot see a broker's contract limit at all, so a generous budget
+            // plans a stack the account is not allowed to hold — and the orders
+            // that get rejected are the EXITS, which is the one rejection that
+            // costs money. Refuse to arm rather than shrink: a silently smaller
+            // grid is a different experiment wearing the same cfgHash.
+            int stackMax = qty + AveragingMaxAdds * AveragingAddQty;
+            if (AveragingMaxStackContracts > 0 && stackMax > AveragingMaxStackContracts)
+            {
+                Print(string.Format(CultureInfo.InvariantCulture,
+                    "BreakBox AVG: planned stack {0} ({1} base + {2} adds x {3}) exceeds the {4}-contract cap — not arming",
+                    stackMax, qty, AveragingMaxAdds, AveragingAddQty, AveragingMaxStackContracts));
+                why = "stack_over_cap";
                 return null;
             }
 
@@ -2782,6 +2820,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(0, 40)]
         [Display(Name = "Slippage reserve (ticks)", Description = "Reserved out of the budget for the full stack's stop", Order = 17, GroupName = "08. Averaging lab")]
         public int AveragingSlippageReserveTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Allow on a LIVE account", Description = "OFF: the lab arms only on Sim/Playback/Backtest. ON: it arms on the real account too. This is an unvalidated averaging-down module whose payoff breaches most prop drawdown rules on UNREALIZED equity — turning this on is a deliberate risk decision, not a setting.", Order = 18, GroupName = "08. Averaging lab")]
+        public bool AveragingLiveAllowed { get; set; }
+
+        [NinjaScriptProperty, Range(0, 1000)]
+        [Display(Name = "Max stack contracts (0 = no cap)", Description = "Refuses to arm when base + MaxAdds x AddQty would exceed this. Set it BELOW the broker/prop contract limit: a prop counts WORKING orders as exposure, so a stack of N with a stop and a TP exposes 3N.", Order = 19, GroupName = "08. Averaging lab")]
+        public int AveragingMaxStackContracts { get; set; }
 
         #endregion
     }
