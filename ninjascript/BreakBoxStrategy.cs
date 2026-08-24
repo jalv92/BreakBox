@@ -189,6 +189,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int _tradesCounted;
         private double _dayPnl;
         private readonly List<double> _tradePnls = new List<double>();
+        // Per-instance key into the account-wide ledger (BbAcctGov). Instrument
+        // name for the breach log's readability + a random suffix, so two
+        // instances on the SAME instrument and account never overwrite each
+        // other's contribution. Set at DataLoaded — it needs Instrument.
+        private string _govKey;
 
         // §13 step 1 — count-only instrumentation. The first thing the
         // calibration protocol does is run with orders disabled and count how
@@ -368,6 +373,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // that happens three times.
                 DailyLossLimit = 450;           // currency
                 DailyProfitTarget = 0;          // 0 = off, currency
+                AccountWideDailyPnl = false;    // multi-market shared close OFF by default
                 AtrPeriod = 14;
 
                 // ---- Visuals
@@ -413,6 +419,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 _barSec = BarSeconds();
                 Print("BreakBox: bar ~ " + _barSec + "s (" + _barSecLabel + ")");
+
+                _govKey = Instrument.FullName + "/" + Guid.NewGuid().ToString("N").Substring(0, 4);
+                // A fresh load (or a Playback rewind, which is one) starts the
+                // shared ledger clean: the discarded pass's contributions and
+                // its breach latch are not this pass's. Live siblings republish
+                // on their next bar.
+                if (Account != null)
+                    BbAcctGov.Reset(Account.Name);
 
                 // Load-bearing order: these six mirrors must be synced from
                 // their NinjaScriptProperty BEFORE BuildConfigs() runs, because
@@ -682,6 +696,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "maxday=" + MaxTradesPerDay.ToString(CultureInfo.InvariantCulture),
                 "dloss=" + DailyLossLimit.ToString("0.##", CultureInfo.InvariantCulture),
                 "dprofit=" + DailyProfitTarget.ToString("0.##", CultureInfo.InvariantCulture),
+                "acctwide=" + (AccountWideDailyPnl ? "1" : "0"),
                 "atr=" + AtrPeriod.ToString(CultureInfo.InvariantCulture),
 
                 // 07. Averaging lab (§7). The module ON and the module OFF are
@@ -2303,9 +2318,40 @@ namespace NinjaTrader.NinjaScript.Strategies
                         : Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency, Close[0]);
             _dayPnl = (cum - _dayStartCum) + open;
 
-            string why = BbMath.DayGovernor(_dayPnl, DailyLossLimit, DailyProfitTarget);
-            if (why.Length > 0)
-                Lockout(why);
+            // Account-wide mode: judge the SUM of every BreakBox instance on
+            // this account instead of this one's own P&L, so three charts on
+            // three instruments share ONE target and stop together. Publishing
+            // happens before the limits are even read, so an instance with its
+            // own limits set to 0 still counts toward everyone else's sum.
+            double judged = _dayPnl;
+            bool shared = false;
+            if (AccountWideDailyPnl && Account != null)
+            {
+                double sum;
+                bool breached;
+                if (BbAcctGov.Publish(Account.Name, _sessionDate, _govKey, _dayPnl, out sum, out breached))
+                {
+                    if (breached)
+                    {
+                        Lockout("acct_breach");     // a sibling already hit the limit
+                        return;
+                    }
+                    shared = true;
+                    judged = sum;
+                }
+            }
+
+            string why = BbMath.DayGovernor(judged, DailyLossLimit, DailyProfitTarget);
+            if (why.Length == 0)
+                return;
+
+            if (shared)
+            {
+                Print("BreakBox: account-wide " + why + " at " + judged.ToString("C2")
+                      + " " + BbAcctGov.Breach(Account.Name, _sessionDate));
+                why = "acct_" + why;
+            }
+            Lockout(why);
         }
 
         // Per-trade bookkeeping for the panel. Split out of CheckDailyLimits
@@ -2649,8 +2695,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Daily profit target ($)", Description = "0 = off", Order = 7, GroupName = "06. Session")]
         public double DailyProfitTarget { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Account-wide daily P&L (all markets)", Description = "Sum the day P&L of EVERY BreakBox instance on this account and judge the limits above against that sum: all of them flatten and lock out together on a breach. OFF = this instance's own P&L only. Leave OFF for backtests — Strategy Analyzer runs share the same process.", Order = 8, GroupName = "06. Session")]
+        public bool AccountWideDailyPnl { get; set; }
+
         [NinjaScriptProperty, Range(2, 500)]
-        [Display(Name = "ATR period", Order = 8, GroupName = "06. Session")]
+        [Display(Name = "ATR period", Order = 9, GroupName = "06. Session")]
         public int AtrPeriod { get; set; }
 
         [NinjaScriptProperty]

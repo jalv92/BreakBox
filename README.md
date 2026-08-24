@@ -273,6 +273,27 @@ over realised P&L **plus the open position**. A breach locks the day out *and
 flattens what is open on that bar*. Granularity is one bar — the same
 granularity the whole exit stack runs at.
 
+**Account-wide (all markets).** Turn on `Account-wide daily P&L` and every
+BreakBox instance on that account — NQ, ES, CL, whatever is loaded — pools its
+day P&L into one number and all of them are judged against **that**. Two charts
+each up $400 hit a $750 target that neither reaches alone: the first one to see
+it broadcasts the breach, and the rest flatten and lock out on their own next
+bar. An instance with its own limits set to `0` still contributes to the pool
+and still obeys the broadcast, so a chart you did not want limiting itself
+cannot silently leave the group.
+
+Each instance pools **its own** realised + open P&L, never the account
+aggregates. `Account.Get(Realized)` and `Get(Unrealized)` are two separately
+updated numbers: the instant a winner's target fills, realised is already
+credited while account unrealised still carries the closed position, and the sum
+double-counts that trade. LatigoBreak hit exactly that live on 2026-08-10 — a
+$750 target flattened everything at $539 realised.
+
+Two limits: the pool lives inside **one NinjaTrader process**, so it does not
+span two machines; and it is keyed by account, so Sim101 and a live account
+never mix. Leave it **off** in the Strategy Analyzer — backtest instances share
+the same process and would pool into each other.
+
 ## Parameter reference
 
 Every parameter, what it does, and the shipped default. `HHMM` values are US
@@ -366,6 +387,7 @@ and on a 30-sec chart.
 | **Max trades per day** | 30 | Hard cap on entries per session. |
 | **Daily loss limit ($)** | 450 | **0 = off.** Checked every bar close on realised **+ open** P&L. A breach locks the day out and flattens what is open. |
 | **Daily profit target ($)** | 0 | **0 = off.** Same mechanism, other direction. |
+| **Account-wide daily P&L (all markets)** | ✘ | Judge the two limits above against the **sum** of every BreakBox instance on this account instead of this chart's own P&L. See below. Leave **off** for backtests. |
 | **ATR period** | 14 | Wilder ATR, hand-rolled and fed from bar closes. Everything ATR-scaled reads this. |
 
 ### 07. Visuals

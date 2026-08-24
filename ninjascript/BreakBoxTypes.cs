@@ -359,4 +359,104 @@ namespace BreakBoxCore
             return secs < 1 ? 1 : secs;
         }
     }
+
+    // Account-wide daily governor — the shared ledger that lets N BreakBox
+    // instances running on DIFFERENT instruments stop TOGETHER when their
+    // COMBINED day P&L reaches the profit target (or the loss limit). Static,
+    // so it is shared by every instance of the strategy inside the one NT8
+    // process; keyed by account, so two accounts never mix.
+    //
+    // Each instance publishes ITS OWN day P&L and reads back the sum. It is
+    // deliberately NOT Account.Get(Realized) + Get(Unrealized): those are two
+    // separately-updated aggregates, and the instant a winner's target fills
+    // realized is already credited while account unrealized still carries the
+    // just-closed position — the sum double-counts that trade and fires the
+    // target early (seen live on LatigoBreak 2026-08-10: a $750 target
+    // flattened everything at $539 realized). One instance's own CumProfit +
+    // Position pair is event-ordered on its own strategy thread, so it is an
+    // internally consistent snapshot, and a sum of consistent numbers inherits
+    // that.
+    public static class BbAcctGov
+    {
+        private sealed class Entry
+        {
+            public DateTime Day;
+            public bool Breached;
+            public readonly Dictionary<string, double> PnL = new Dictionary<string, double>();
+        }
+
+        private static readonly object Lk = new object();
+        private static readonly Dictionary<string, Entry> Accounts = new Dictionary<string, Entry>();
+
+        // Publish this instance's day P&L, read back the account-wide sum.
+        // false = shared mode cannot operate for this instance right now (no
+        // account/day, or another instance already registered a NEWER trading
+        // day — a lagging instance must not drag today's sum backwards with
+        // yesterday's number). The caller then judges its own P&L alone.
+        public static bool Publish(string account, DateTime day, string key, double pnl,
+                                   out double sum, out bool breached)
+        {
+            sum = pnl;
+            breached = false;
+            if (string.IsNullOrEmpty(account) || string.IsNullOrEmpty(key) || day == DateTime.MinValue)
+                return false;
+
+            lock (Lk)
+            {
+                Entry e;
+                Accounts.TryGetValue(account, out e);
+                if (e != null && e.Day > day)
+                    return false;
+                if (e == null || e.Day < day)
+                {
+                    e = new Entry();
+                    e.Day = day;
+                    Accounts[account] = e;
+                }
+                e.PnL[key] = pnl;
+                double t = 0.0;
+                foreach (double v in e.PnL.Values)
+                    t += v;
+                sum = t;
+                breached = e.Breached;
+                return true;
+            }
+        }
+
+        // Latch the breach for every other instance on this account and return
+        // the per-instance breakdown for the log. Broadcasting through the
+        // ledger — instead of letting each instance rediscover the sum on its
+        // own next bar — is what makes them all flatten on the SAME bar, and it
+        // keeps an instance whose own limits are 0 (off) locked out too.
+        public static string Breach(string account, DateTime day)
+        {
+            if (string.IsNullOrEmpty(account))
+                return "";
+            lock (Lk)
+            {
+                Entry e;
+                if (!Accounts.TryGetValue(account, out e) || e.Day != day)
+                    return "";
+                e.Breached = true;
+                var sb = new System.Text.StringBuilder("[");
+                foreach (KeyValuePair<string, double> kv in e.PnL)
+                    sb.Append(kv.Key).Append(' ')
+                      .Append(kv.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))
+                      .Append("; ");
+                return sb.Append(']').ToString();
+            }
+        }
+
+        // Playback rewind / a fresh strategy load: the discarded pass's numbers
+        // and its breach latch must not survive into the new one. Instances
+        // still running republish on their next bar, so the sum is whole again
+        // within one bar.
+        public static void Reset(string account)
+        {
+            if (string.IsNullOrEmpty(account))
+                return;
+            lock (Lk)
+                Accounts.Remove(account);
+        }
+    }
 }
