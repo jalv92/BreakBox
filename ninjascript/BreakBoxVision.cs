@@ -115,6 +115,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel = true;
                 PaintPriceMarkers = false;
 
+                EnableCloud = true;
+                EnableBox = false;
+
                 AddPlot(new Stroke(Brushes.DeepSkyBlue, 1), PlotStyle.Line, "RibbonFast");
                 AddPlot(new Stroke(Brushes.SteelBlue, 1), PlotStyle.Line, "RibbonSlow");
                 AddPlot(new Stroke(Brushes.Silver, 2), PlotStyle.Line, "TrendLine");
@@ -153,6 +156,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 _barSec = BarSeconds();
                 BuildConfigs();
+
+                // Engine off = nothing on the chart from it. The ribbon plots
+                // are cloud output, so they go transparent with it.
+                if (!EnableCloud)
+                    for (int i = 0; i < 3; i++)
+                        Plots[i].Brush = Brushes.Transparent;
 
                 _atr = new WilderAtr(AtrPeriod);
                 _eF = new Ema(_cloudCfg.RibbonFast);
@@ -299,27 +308,39 @@ namespace NinjaTrader.NinjaScript.Indicators
             // lockout, no window and no position, and hiding triggers behind a
             // simulated governor is how a calibration view starts explaining
             // away the very bars you are trying to count.
-            _lastAction = _cloud.OnBar(bar, secs, _eF.Value, _eS.Value, _eT.Value,
-                                       _atr.Value, _atr.IsWarm, true, false);
+            // Either engine can be switched off from the dialog: it neither
+            // runs nor paints. BOTH run by default-config arbitration in the
+            // strategy; here the switch is purely the operator's choice of
+            // what to look at.
+            if (EnableCloud)
+            {
+                _lastAction = _cloud.OnBar(bar, secs, _eF.Value, _eS.Value, _eT.Value,
+                                           _atr.Value, _atr.IsWarm, true, false);
 
-            // Assume every trigger filled. Vision has no order layer, so the
-            // alternative is a token that stays minted forever and a chart that
-            // paints a gold candle on every subsequent bar of the same pullback.
-            if (_lastAction.Fire)
-                _cloud.OnEntryFilled();
+                // Assume every trigger filled. Vision has no order layer, so the
+                // alternative is a token that stays minted forever and a chart that
+                // paints a gold candle on every subsequent bar of the same pullback.
+                if (_lastAction.Fire)
+                    _cloud.OnEntryFilled();
 
-            // BOTH engines run, unconditionally. §4.1 arbitration is the
-            // STRATEGY's job; a calibration view that hid the box because the
-            // cloud armed first would hide exactly the trades you are trying to
-            // account for.
-            DateTime sessionDate = SessionDateOf(Time[0], secs);
-            BbAction boxAction = _boxEngine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, true, false);
-            if (boxAction.Fire)
-                _boxEngine.OnEntryFilled();
+                PaintCloud();
+                PaintSignalBar(bar);
+            }
 
-            PaintCloud();
-            PaintSignalBar(bar);
-            PaintBox();
+            // No §4.1 arbitration here: the box never hides because the cloud
+            // armed first. Only the operator's switch hides it — a calibration
+            // view that hid the box on its own would hide exactly the trades
+            // you are trying to account for.
+            if (EnableBox)
+            {
+                DateTime sessionDate = SessionDateOf(Time[0], secs);
+                BbAction boxAction = _boxEngine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, true, false);
+                if (boxAction.Fire)
+                    _boxEngine.OnEntryFilled();
+
+                PaintBox();
+            }
+
             DrawMarkers(Time[0]);
         }
 
@@ -569,6 +590,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
         #region Parameters
+
+        [NinjaScriptProperty]
+        [Display(Name = "Cloud", Description = "Run and paint the cloud engine (ribbon, region, signal candles)", Order = 1, GroupName = "00. Engines")]
+        public bool EnableCloud { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Box", Description = "Run and paint the box engine (white rectangles)", Order = 2, GroupName = "00. Engines")]
+        public bool EnableBox { get; set; }
 
         [NinjaScriptProperty, Range(30, 7200)]
         [Display(Name = "Ribbon fast (sec)", Order = 1, GroupName = "01. Cloud")]
