@@ -109,7 +109,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Name = "BreakBoxVision";
                 Description = "Calibration view of the BreakBox cloud and box engines. Trades nothing. "
                     + "Instantiates its OWN state from its OWN parameters — it is NOT a mirror of the strategy.";
-                Calculate = Calculate.OnBarClose;
+                Calculate = Calculate.OnEachTick;
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
                 DrawOnPricePanel = true;
@@ -280,15 +280,36 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #region Bar loop
 
+        // Bar 0 is FORMING; bar 1 is the last CLOSED bar. The engines, the
+        // gates and every brush see a bar exactly once, on the first tick of
+        // the next one — the same maths as OnBarClose, shifted one index. Bar
+        // 0 only gets a provisional ribbon (Ema.Peek, no state) so the ribbon
+        // and the region move with the tape. Historical bars report
+        // IsFirstTickOfBar on every call, so the two passes stay identical
+        // there.
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < 1)
+            if (CurrentBar < 2)
                 return;
 
-            if (_firstBarTime == DateTime.MinValue)
-                _firstBarTime = Time[0];
+            if (IsFirstTickOfBar)
+                OnBarClosed();
 
-            BbBar bar = ToBar();
+            if (EnableCloud)
+            {
+                Values[0][0] = _eF.Peek(Close[0]);
+                Values[1][0] = _eS.Peek(Close[0]);
+                Values[2][0] = _eT.Peek(Close[0]);
+                PaintCloud();
+            }
+        }
+
+        private void OnBarClosed()
+        {
+            if (_firstBarTime == DateTime.MinValue)
+                _firstBarTime = Time[1];
+
+            BbBar bar = ToBar(1);
 
             // Update FIRST, exactly like the engine's step 0 (spec §5.2): every
             // gate reads post-update values, and `close > eF` means something
@@ -298,11 +319,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             _eS.Update(bar.Close);
             _eT.Update(bar.Close);
 
-            Values[0][0] = _eF.Value;
-            Values[1][0] = _eS.Value;
-            Values[2][0] = _eT.Value;
+            Values[0][1] = _eF.Value;
+            Values[1][1] = _eS.Value;
+            Values[2][1] = _eT.Value;
 
-            int secs = Time[0].Hour * 3600 + Time[0].Minute * 60 + Time[0].Second;
+            int secs = Time[1].Hour * 3600 + Time[1].Minute * 60 + Time[1].Second;
 
             // canTrade = true, positioned = false, ALWAYS. Vision has no
             // lockout, no window and no position, and hiding triggers behind a
@@ -323,7 +344,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (_lastAction.Fire)
                     _cloud.OnEntryFilled();
 
-                PaintCloud();
                 PaintSignalBar(bar);
             }
 
@@ -333,7 +353,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // you are trying to account for.
             if (EnableBox)
             {
-                DateTime sessionDate = SessionDateOf(Time[0], secs);
+                DateTime sessionDate = SessionDateOf(Time[1], secs);
                 BbAction boxAction = _boxEngine.OnBar(bar, secs, sessionDate, _atr.Value, _atr.IsWarm, true, false);
                 if (boxAction.Fire)
                     _boxEngine.OnEntryFilled();
@@ -341,18 +361,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PaintBox();
             }
 
-            DrawMarkers(Time[0]);
+            DrawMarkers(Time[1]);
         }
 
-        private BbBar ToBar()
+        private BbBar ToBar(int i)
         {
             BbBar b;
-            b.Time = Time[0];
-            b.Open = Open[0];
-            b.High = High[0];
-            b.Low = Low[0];
-            b.Close = Close[0];
-            b.Volume = Volume[0];
+            b.Time = Time[i];
+            b.Open = Open[i];
+            b.High = High[i];
+            b.Low = Low[i];
+            b.Close = Close[i];
+            b.Volume = Volume[i];
             return b;
         }
 
@@ -382,14 +402,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (regime != _segRegime || _segStartBar < 0)
             {
                 _segRegime = regime;
-                _segStartBar = CurrentBar;
+                _segStartBar = CurrentBar - 1;   // the regime changed on the CLOSED bar
                 _segTag = "bbv_cloud_" + (_tagSeq++);
             }
 
-            // A region needs width. On the bar a segment opens there is none.
+            // Always >= 1: the segment opens on bar 1 and the region runs to
+            // the forming bar 0, so it has width the moment it exists.
             int startBarsAgo = CurrentBar - _segStartBar;
-            if (startBarsAgo < 1)
-                return;
 
             Brush area = regime > 0 ? CloudUp : (regime < 0 ? CloudDn : CloudFlat);
             DrawTag(Draw.Region(this, _segTag, startBarsAgo, 0, Values[0], Values[1], null, area, 20));
@@ -409,7 +428,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (_lastAction.Fire)
             {
-                BarBrushes[0] = GoldBrush;
+                BarBrushes[1] = GoldBrush;
                 return;
             }
 
@@ -430,35 +449,35 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool range = (bar.High - bar.Low) >= _cloudCfg.MinBarRangeAtr * _atr.Value;
 
             if (body && shape && range)
-                BarBrushes[0] = DimGoldBrush;
+                BarBrushes[1] = DimGoldBrush;
         }
 
         // One rectangle per SEALED box, drawn once when its Id changes. A box's
         // edges never move after the seal (spec §6.1), so redrawing it every
         // bar would buy nothing and cost 780 draw objects a session.
         //
-        // Right edge = `Time[1]`, NOT `Time[0]` / `SealedAt`. WindowRange()
+        // The sealing bar is bar 1 (the bar that just closed). Right edge =
+        // the bar BEFORE it, NOT the sealing bar / `SealedAt`. WindowRange()
         // (BreakBoxCore.cs:565) reads the ring BEFORE Push(bar) runs, so the
-        // measured window is `Time[1] .. Time[BoxLookback]` — it deliberately
-        // EXCLUDES the sealing bar itself (the one-bar-lookahead guard pinned
-        // by tests/BoxTests.cs's FormationExcludesTheCurrentBar). Drawing to
-        // `Time[0]` put the sealing bar's own candle inside a box its high/low
-        // were never measured against: if that candle's wick pokes past
-        // `box.High`/`box.Low` (Form() only gates its CLOSE, not its wick —
-        // BreakBoxCore.cs:657), the operator sees a candle sticking outside
-        // the box that supposedly contains it. Left edge stays `Time[BoxLookback]`
-        // — the box's own High/Low ARE the range of the last BoxLookback CLOSED
-        // bars (the Lifecycle window), so walking back that many bars from the
-        // sealing bar covers exactly the bars the range was measured over, no
-        // more. Indexing `Time[]` (not `SealedAt` minus N seconds) means the
-        // left edge survives session gaps and weekends the way a literal time
-        // subtraction would not. `Math.Min` guards a box sealed with fewer than
-        // BoxLookback bars of chart history (should not happen in practice —
-        // the window can't fill without that many bars — but an
-        // IndexOutOfRange here would take the whole indicator down for a
-        // drawing bug); `Time[1]` needs no matching guard because OnBarUpdate's
-        // `CurrentBar < 1` return (line 276) already guarantees `CurrentBar >= 1`
-        // — i.e. at least two bars — everywhere PaintBox() runs.
+        // measured window deliberately EXCLUDES the sealing bar itself (the
+        // one-bar-lookahead guard pinned by tests/BoxTests.cs's
+        // FormationExcludesTheCurrentBar). Drawing to the sealing bar put its
+        // own candle inside a box its high/low were never measured against:
+        // if that candle's wick pokes past `box.High`/`box.Low` (Form() only
+        // gates its CLOSE, not its wick — BreakBoxCore.cs:657), the operator
+        // sees a candle sticking outside the box that supposedly contains it.
+        // Left edge = BoxLookback bars back from the sealing bar — the box's
+        // own High/Low ARE the range of the last BoxLookback CLOSED bars (the
+        // Lifecycle window), so that covers exactly the bars the range was
+        // measured over, no more. Indexing `Time[]` (not `SealedAt` minus N
+        // seconds) means the left edge survives session gaps and weekends the
+        // way a literal time subtraction would not. `Math.Min` guards a box
+        // sealed with fewer than BoxLookback bars of chart history (should
+        // not happen in practice — the window can't fill without that many
+        // bars — but an IndexOutOfRange here would take the whole indicator
+        // down for a drawing bug); `Time[2]` needs no matching guard because
+        // OnBarUpdate's `CurrentBar < 2` return already guarantees it
+        // everywhere PaintBox() runs.
         private void PaintBox()
         {
             BbBox box = _boxEngine.Box;
@@ -466,11 +485,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             _lastDrawnBoxId = box.Id;
 
-            int barsBack = Math.Min(_boxCfg.BoxLookback, CurrentBar);
-            DateTime left = Time[barsBack];
+            int barsBack = Math.Min(_boxCfg.BoxLookback, CurrentBar - 1);
+            DateTime left = Time[barsBack + 1];
 
             DrawTag(Draw.Rectangle(this, "bbv_box_" + box.Id, false,
-                                   left, box.Low, Time[1], box.High,
+                                   left, box.Low, Time[2], box.High,
                                    BoxBrush, BoxBrush, 6));
         }
 
@@ -562,9 +581,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
 
                 string id = r.Ts.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + "_" + (_tagSeq++);
-                DrawTag(Draw.ArrowUp(this, "bbv_in_" + id, false, 0, r.Entry, EntryBrush));
+                DrawTag(Draw.ArrowUp(this, "bbv_in_" + id, false, 1, r.Entry, EntryBrush));
                 if (r.Exit > 0.0)
-                    DrawTag(Draw.ArrowDown(this, "bbv_out_" + id, false, 0, r.Exit, ExitBrush));
+                    DrawTag(Draw.ArrowDown(this, "bbv_out_" + id, false, 1, r.Exit, ExitBrush));
             }
         }
 

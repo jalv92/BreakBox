@@ -94,10 +94,18 @@ namespace BreakBoxCore
 
         public void Update(double sample)
         {
+            _value = Peek(sample);
+            _n++;
+        }
+
+        // The value Update(sample) WOULD produce, without producing it. Vision
+        // paints the forming bar with this so the ribbon moves with the tape
+        // while the engines still see each bar exactly once, on its close.
+        public double Peek(double sample)
+        {
             // Written as a*x + (1-a)*prev, NOT prev + a*(x-prev): the two forms
             // differ in the last bits and only this one is exactly `x` at a = 1.
-            _value = _n == 0 ? sample : _alpha * sample + (1.0 - _alpha) * _value;
-            _n++;
+            return _n == 0 ? sample : _alpha * sample + (1.0 - _alpha) * _value;
         }
 
         public double Value { get { return _value; } }

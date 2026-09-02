@@ -13,6 +13,24 @@ public static class VisionTests
     public static void Run()
     {
         CloseInRangeRatio();
+        PeekMatchesUpdate();
+    }
+
+    // The forming bar is painted with Ema.Peek; the closed bar with Ema.Update.
+    // If the two ever disagree the ribbon jumps on every bar close.
+    private static void PeekMatchesUpdate()
+    {
+        T.Section("Vision — Ema.Peek is Update without the side effect");
+        var e = new Ema(5);
+        double[] tape = { 100.0, 101.5, 99.25, 103.0, 102.0, 104.75 };
+        foreach (double x in tape)
+        {
+            int fed = e.BarsFed;
+            double peek = e.Peek(x);
+            T.Check(e.BarsFed == fed, "peek feeds nothing");
+            e.Update(x);
+            T.CheckClose(e.Value, peek, "update lands exactly on the peeked value");
+        }
     }
 
     private static BbBar Bar(double o, double h, double l, double c)
