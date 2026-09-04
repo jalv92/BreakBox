@@ -53,6 +53,7 @@ public static class Program
         HistoryTests.Run();
         AveragingTests.Run();
         AcctGovTests.Run();
+        TrendStTests.Run();
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
             ? "ALL PASS (" + T.Checks + " checks)"

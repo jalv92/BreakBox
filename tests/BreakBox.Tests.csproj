@@ -12,6 +12,7 @@
     <Compile Include="../ninjascript/BreakBoxCore.cs" Condition="Exists('../ninjascript/BreakBoxCore.cs')" />
     <Compile Include="../ninjascript/BreakBoxExits.cs" Condition="Exists('../ninjascript/BreakBoxExits.cs')" />
     <Compile Include="../ninjascript/BreakBoxHistory.cs" Condition="Exists('../ninjascript/BreakBoxHistory.cs')" />
+    <Compile Include="../ninjascript/TrendStCore.cs" Condition="Exists('../ninjascript/TrendStCore.cs')" />
     <Compile Include="../ninjascript/AveragingEngineCore.cs" Condition="Exists('../ninjascript/AveragingEngineCore.cs')" />
   </ItemGroup>
 </Project>

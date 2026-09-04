@@ -442,6 +442,35 @@ experiments — never pool them.**
 
 ---
 
+## TrendST — the second strategy on the same cloud
+
+`ninjascript/TrendST.cs` + `ninjascript/TrendStCore.cs`. A separate, simpler
+strategy that reads the SAME cloud regime `BreakBoxVision` paints (same EMAs,
+same latched regime) and trades one setup:
+
+1. Regime up (green cloud) — longs only; regime down — shorts only.
+2. A pullback of at least `Min pullback bars` closed bars whose low touches the
+   fast ribbon EMA, with volume **decaying from the tip to the end**: the last
+   pullback bar's volume below `Volume decay ratio` × the volume of the bar
+   before the pullback (0.8 = at least 20% lower). Endpoints only — one big bar
+   in the middle does not cancel the setup.
+3. The signal: a bullish bar that closes above the previous bar's high. Entry at
+   market on that close.
+
+Exits are `Stop loss (ticks)` / `Profit target (ticks)`, 70 / 145 by default,
+placed once per trade and never re-issued — drag them in Chart Trader (to
+breakeven, wherever) and the strategy leaves them alone. Entry window
+09:35–15:50 ET, flatten at 16:00, all three adjustable.
+
+**ATM mode.** Tick `Use ATM strategy` and pick a template in `ATM template`
+(the dropdown lists the templates saved on this machine, like Chart Trader).
+The template then owns stop, target and size. Realtime / Playback only — NT8
+ignores ATM strategies on historical bars and in the Strategy Analyzer.
+
+Deploy: `TrendST.cs` and `TrendStCore.cs` go in `Custom/Strategies/` next to the
+other BreakBox files (it needs `BreakBoxTypes.cs` and `BreakBoxCloud.cs`).
+Nothing about it is validated.
+
 ## Bonus: the MNQ prop-evaluation setup
 
 > ### ⚠️ What this configuration is for
