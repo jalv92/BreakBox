@@ -3,7 +3,8 @@
 // Regime = the SAME BbCloud engine BreakBoxVision paints (EMA ribbon 300s/690s,
 // trend line 1560s, latched regime). Green cloud -> longs only, red -> shorts
 // only. Setup and signal live in TrendStCore.cs (pure, tested): a pullback into
-// the ribbon with volume decaying from the tip, then an engulfing close.
+// the ribbon with volume decaying from the tip, then a real engulfing bar
+// (body covers the prior body, close above the prior high).
 //
 // Entry: market on the close of the signal bar (Calculate.OnBarClose).
 // Exits: SetStopLoss / SetProfitTarget in TICKS (70 / 145 by default), set ONCE

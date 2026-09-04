@@ -454,8 +454,9 @@ same latched regime) and trades one setup:
    pullback bar's volume below `Volume decay ratio` × the volume of the bar
    before the pullback (0.8 = at least 20% lower). Endpoints only — one big bar
    in the middle does not cancel the setup.
-3. The signal: a bullish bar that closes above the previous bar's high. Entry at
-   market on that close.
+3. The signal: a real bullish engulfing — its body covers the whole body of the
+   previous bar and it closes above that bar's high. Entry at market on that
+   close (the fill prints at the next bar's open, the same instant).
 
 Exits are `Stop loss (ticks)` / `Profit target (ticks)`, 70 / 145 by default,
 placed once per trade and never re-issued — drag them in Chart Trader (to

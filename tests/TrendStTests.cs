@@ -56,5 +56,14 @@ public static class TrendStTests
         s.OnBar(B(103, 104, 99, 101, 200), +1, 100);
         T.CheckInt(s.OnBar(B(101, 103, 100.5, 102, 300), +1, 100), 0, "green bar that does not clear the prior high: no signal");
         T.CheckInt(s.OnBar(B(102, 106, 101, 105, 300), +1, 100), 0, "…and the pullback was reset by leaving the ribbon");
+
+        // Clears the prior high but its body does not engulf the prior body:
+        // not the pattern (the 1:39 bar of 2026-09-03).
+        s = new TrendStSetup(cfg);
+        s.OnBar(B(104, 106, 103, 105, 500), +1, 100);
+        s.OnBar(B(103, 104, 99, 101, 300), +1, 100);
+        s.OnBar(B(101, 102, 99, 101.5, 200), +1, 100);                    // small bullish pullback bar, body 101-101.5
+        T.CheckInt(s.OnBar(B(101.25, 102.5, 100, 102.25, 300), +1, 100), 0, "pokes over the prior high without engulfing its body: no signal");
+        T.CheckInt(s.OnBar(B(101, 106, 100, 105, 300), +1, 100), +1, "the real engulfing bar right after still fires");
     }
 }

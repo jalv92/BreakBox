@@ -13,8 +13,11 @@
 //      bar's volume is below DecayRatio x the TIP's volume. Endpoints only, the
 //      line from the tip to the end — one big bar in the middle must not kill
 //      the setup.
-//   4. The signal bar: bullish body (Close > Open) that closes ABOVE the
-//      previous bar's high (the engulfing). Entry is at its close.
+//   4. The signal bar: a REAL bullish engulfing — its body covers the whole
+//      body of the previous bar (Open <= previous body low, Close >= previous
+//      body high) AND it closes above the previous bar's high. A small green
+//      bar that pokes one tick over the prior high is not it (2026-09-03: that
+//      is exactly the bar that fired first). Entry is at its close.
 // A bar that neither touches the ribbon nor is the signal ends the pullback;
 // a regime change resets everything.
 using System;
@@ -74,7 +77,14 @@ namespace BreakBoxCore
 
             bool touches = regime > 0 ? bar.Low <= eF : bar.High >= eF;
             bool body = regime > 0 ? bar.Close > bar.Open : bar.Close < bar.Open;
-            bool engulf = havePrev && (regime > 0 ? bar.Close > prev.High : bar.Close < prev.Low);
+            bool engulf = false;
+            if (havePrev)
+            {
+                double bodyLo = Math.Min(prev.Open, prev.Close), bodyHi = Math.Max(prev.Open, prev.Close);
+                engulf = regime > 0
+                    ? bar.Open <= bodyLo && bar.Close >= bodyHi && bar.Close > prev.High
+                    : bar.Open >= bodyHi && bar.Close <= bodyLo && bar.Close < prev.Low;
+            }
 
             // Signal test FIRST: the engulfing bar may itself still touch the
             // ribbon (its low usually does), and it must not be swallowed as
